@@ -1,5 +1,0 @@
-astrea_common
-capture_service
-coordinator
-device_agent
-worker
