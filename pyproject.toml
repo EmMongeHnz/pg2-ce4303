@@ -26,6 +26,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 astrea-stream-viewer = "capture_service.stream_viewer:Main"
+astrea-capture = "capture_service.capture:Main"
 astrea-coordinator = "coordinator.__main__:Main"
 astrea-worker = "worker.__main__:Main"
 astrea-device-agent = "device_agent.__main__:Main"
