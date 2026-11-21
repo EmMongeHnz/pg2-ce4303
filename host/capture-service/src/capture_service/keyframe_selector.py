@@ -1,6 +1,6 @@
 """Decides when a frame becomes a keyframe: the turntable advanced enough and the pose has settled.
 
-The wait for a stable pose skips frames with a hand on the object or motion blur. Stability is measured
+The wait for a stable pose skips frames with a hand on the object or motion blur, and the frames collected while waiting are averaged into the keyframe. Stability is measured
 against the pose that opened the current window, so a slow drift also restarts it.
 """
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from capture_service.ring_pose import AngleDifferenceDeg, RingPose
 
 DEFAULT_STEP_DEG = 10.0
-DEFAULT_STABLE_SECONDS = 0.5
+DEFAULT_STABLE_SECONDS = 1.2
 DEFAULT_MAX_ANGLE_DRIFT_DEG = 0.5
 DEFAULT_MAX_DISTANCE_DRIFT_MM = 3.0
 

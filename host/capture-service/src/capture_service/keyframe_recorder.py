@@ -11,9 +11,10 @@ from astrea_common.view_package import ViewPackage, WriteView
 from capture_service.coverage import CoverageTracker
 from capture_service.depth_averager import AverageDepth
 from capture_service.keyframe_selector import KeyframeSelector, SelectorParams
+from capture_service.pose_average import AveragePose
 from capture_service.ring_pose import RingPose
 
-DEFAULT_AVERAGE_FRAMES = 5
+DEFAULT_AVERAGE_FRAMES = 60
 FALLBACK_FPS = 30.0
 
 
@@ -49,16 +50,17 @@ class KeyframeRecorder:
 
     def _Save(self, stableFrames: list[TrackedFrame]) -> ViewPackage:
         best = min(stableFrames, key=lambda tracked: tracked.pose.reprojectionErrorPx)
+        pose = AveragePose([tracked.pose for tracked in stableFrames])
         view = ViewPackage(
             index=self.viewCount,
             rgb=best.frame.RgbAtDepthResolution(),
             depthM=AverageDepth([tracked.frame.depthM for tracked in stableFrames]),
             intrinsics=best.frame.depthIntrinsics,
-            rotation=best.pose.rotation,
-            translationMm=best.pose.translationMm,
-            azimuthDeg=best.pose.azimuthDeg,
-            elevationDeg=best.pose.elevationDeg,
-            reprojectionErrorPx=best.pose.reprojectionErrorPx,
+            rotation=pose.rotation,
+            translationMm=pose.translationMm,
+            azimuthDeg=pose.azimuthDeg,
+            elevationDeg=pose.elevationDeg,
+            reprojectionErrorPx=pose.reprojectionErrorPx,
         )
         WriteView(self.sessionDir, view)
         self.coverage.Mark(view.azimuthDeg)

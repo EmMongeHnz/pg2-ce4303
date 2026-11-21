@@ -10,6 +10,7 @@ from capture_service.synthetic_ring import ViewPose
 
 INTRINSICS = Intrinsics(fx=100.0, fy=100.0, cx=8.0, cy=6.0, width=16, height=12)
 FRAME_S = 1 / 30
+FAST = SelectorParams(stableSeconds=0.5)
 
 
 def Pose(azimuthDeg: float, error: float = 0.3) -> RingPose:
@@ -33,7 +34,7 @@ def ScanSteps(recorder: KeyframeRecorder, azimuths: list[float]) -> list:
 
 
 def test_one_keyframe_per_step_of_a_full_turn(tmp_path):
-    recorder = KeyframeRecorder(tmp_path, SelectorParams(stepDeg=9.9))
+    recorder = KeyframeRecorder(tmp_path, SelectorParams(stepDeg=9.9, stableSeconds=0.5))
     saved = ScanSteps(recorder, [float(a) for a in range(5, 360, 10)])
     assert len(saved) == 36
     assert [view.index for view in saved] == list(range(36))
@@ -42,7 +43,7 @@ def test_one_keyframe_per_step_of_a_full_turn(tmp_path):
 
 
 def test_saved_view_matches_the_tracked_pose_and_averaged_depth(tmp_path):
-    recorder = KeyframeRecorder(tmp_path, averageFrames=3)
+    recorder = KeyframeRecorder(tmp_path, FAST, averageFrames=3)
     saved = ScanSteps(recorder, [45.0])
     view = ReadView(ListViewPaths(tmp_path)[0])
     assert len(saved) == 1
@@ -53,12 +54,34 @@ def test_saved_view_matches_the_tracked_pose_and_averaged_depth(tmp_path):
     assert SectorOf(view.azimuthDeg) == 4
 
 
-def test_frame_with_the_lowest_reprojection_error_provides_the_pose(tmp_path):
-    recorder = KeyframeRecorder(tmp_path, averageFrames=5)
+def test_colour_comes_from_the_frame_with_the_lowest_reprojection_error(tmp_path):
+    recorder = KeyframeRecorder(tmp_path, FAST, averageFrames=5)
     saved = None
     for index in range(20):
         error = 0.1 if index == 14 else 0.5
         saved = recorder.Feed(Frame(index, 0.3), Pose(40.0, error)) or saved
     assert saved is not None
-    assert saved.reprojectionErrorPx == 0.1
     assert saved.rgb[0, 0, 0] == 14
+    assert np.isclose(saved.reprojectionErrorPx, 0.42)
+
+
+def test_saved_pose_is_the_average_of_the_stable_window(tmp_path):
+    recorder = KeyframeRecorder(tmp_path, FAST)
+    rng = np.random.default_rng(3)
+    truth = Pose(40.0)
+    saved = None
+    for index in range(40):
+        jitter = RingPose(truth.rotation, truth.translationMm + rng.normal(0.0, 0.4, 3), truth.markerIds, 0.3)
+        saved = recorder.Feed(Frame(index, 0.3), jitter) or saved
+    assert saved is not None
+    assert np.linalg.norm(saved.translationMm - truth.translationMm) < 0.25
+
+
+def test_all_frames_of_the_stable_window_are_averaged(tmp_path):
+    recorder = KeyframeRecorder(tmp_path, FAST)
+    saved = None
+    for index in range(40):
+        depth = 0.3 + (0.002 if index % 2 else -0.002)
+        saved = recorder.Feed(Frame(index, depth), Pose(40.0)) or saved
+    assert saved is not None
+    assert np.allclose(saved.depthM, 0.3, atol=2.5e-4)

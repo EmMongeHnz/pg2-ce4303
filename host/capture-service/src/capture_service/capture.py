@@ -5,8 +5,8 @@ Usage:
     uv run astrea-capture --name cup --r3d capture.r3d     # replay a Record3D export
     uv run astrea-capture --name cup --layout hardware/aruco-ring/out/ring-layout.json --rotate 0
 
-Turn the plate by hand and pause briefly every few degrees; a keyframe is saved when the pose is stable
-for ~0.5 s and the plate advanced at least --step-deg since the previous keyframe. The window shows the
+Turn the plate by hand and pause every few degrees; a keyframe is saved when the pose is stable
+for --stable-seconds (1.2 s; every frame in that window is averaged) and the plate advanced at least --step-deg since the previous keyframe. The window shows the
 ring pose, the saved keyframes and a coverage ring with one arc per 10° sector. Press q or close the
 window to finish. Sessions go to out/scans/<name>/ and are reconstructed with `astrea-reconstruct`.
 """
@@ -57,7 +57,7 @@ def ParseArgs() -> argparse.Namespace:
     parser.add_argument("--stable-seconds", type=float, default=DEFAULT_STABLE_SECONDS)
     parser.add_argument("--max-angle-drift-deg", type=float, default=DEFAULT_MAX_ANGLE_DRIFT_DEG)
     parser.add_argument("--max-distance-drift-mm", type=float, default=DEFAULT_MAX_DISTANCE_DRIFT_MM)
-    parser.add_argument("--average-frames", type=int, default=DEFAULT_AVERAGE_FRAMES)
+    parser.add_argument("--average-frames", type=int, default=DEFAULT_AVERAGE_FRAMES, help="most frames of the stable window to average")
     return parser.parse_args()
 
 
