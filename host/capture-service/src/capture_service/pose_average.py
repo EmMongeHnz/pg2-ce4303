@@ -4,14 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from astrea_common.rotations import MeanRotation
 from capture_service.ring_pose import RingPose
-
-
-def MeanRotation(rotations: list[np.ndarray]) -> np.ndarray:
-    """Chordal L2 mean: the rotation closest to the arithmetic mean of the matrices."""
-    left, _, right = np.linalg.svd(np.sum(rotations, axis=0))
-    correction = np.diag([1.0, 1.0, np.linalg.det(left @ right)])
-    return left @ correction @ right
 
 
 def AveragePose(poses: list[RingPose]) -> RingPose:

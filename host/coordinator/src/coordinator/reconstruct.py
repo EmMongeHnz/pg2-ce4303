@@ -16,16 +16,20 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Callable, Iterable
 
 import numpy as np
 
 from astrea_common.tsdf import BYTES_PER_VOXEL, GridSpec, TsdfVolume
-from astrea_common.view_package import ListViewPaths, ReadView, ViewPackage
+from astrea_common.view_package import ListViewPaths, ReadView, ViewPackage, WithPose
+from astrea_common.mesh import TriangleMesh
 from astrea_common.view_preprocess import ComputeViewWeights, PlatePoints, PreprocessParams, PreprocessView
-from coordinator.meshing import ComponentCount
+from coordinator.meshing import ComponentCount, ExtractMesh, LargestComponent
+from coordinator.pose_refinement import FitTurntable, RefineWithIcp
 from coordinator.postprocess import LOD_HIGH_TRIANGLES, LOD_LOW_TRIANGLES, TAUBIN_ITERATIONS, BuildLods
 
 LOD_BUDGETS = {"full": None, "high": LOD_HIGH_TRIANGLES, "low": LOD_LOW_TRIANGLES}
@@ -36,6 +40,9 @@ DEFAULT_TRUNCATION_MM = 5.2
 DEFAULT_MAX_VOXELS = 100_000_000
 GRID_MARGIN_TRUNCATIONS = 1.5
 BYTES_PER_GIB = 1024**3
+REFINE_MODES = ("none", "turntable", "icp")
+REGISTRATION_VOXEL_MM = 1.3
+REFINED_POSES_NAME = "refined-poses.json"
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,7 @@ class ReconstructSettings:
     weights: bool = True
     bilinear: bool = True
     taubinIterations: int = TAUBIN_ITERATIONS
+    refinePoses: str = "none"
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,7 @@ class ReconstructionReport:
     preprocess: dict
     settings: dict
     grid: dict
+    refinement: dict
     fusionSeconds: float
     lods: dict[str, LodReport]
 
@@ -104,11 +113,11 @@ def MeasureObjectBounds(views, params: PreprocessParams) -> tuple[np.ndarray, np
     return np.min(lows, axis=0), np.max(highs, axis=0)
 
 
-def ChooseGrid(viewPaths: list[Path], params: PreprocessParams, settings: ReconstructSettings) -> GridSpec:
+def ChooseGrid(viewSource: Callable[[], Iterable[ViewPackage]], params: PreprocessParams, settings: ReconstructSettings) -> GridSpec:
     if settings.extentMm is not None:
         grid = GridSpec.Cube(settings.extentMm, settings.voxelMm)
     else:
-        low, high = MeasureObjectBounds(IterateViews(viewPaths), params)
+        low, high = MeasureObjectBounds(viewSource(), params)
         margin = GRID_MARGIN_TRUNCATIONS * settings.truncationMm + settings.voxelMm
         grid = GridSpec.FitToBounds(low, high, settings.voxelMm, margin)
     EnsureGridFits(grid, settings.maxVoxels)
@@ -134,6 +143,32 @@ def FuseViews(views, params: PreprocessParams, grid: GridSpec, settings: Reconst
     return volume, keptPercent
 
 
+def RegistrationMesh(views: list[ViewPackage], params: PreprocessParams, settings: ReconstructSettings) -> TriangleMesh:
+    """Surface fused from every view on a coarser grid, used as the target when aligning views to each other."""
+    coarse = replace(settings, voxelMm=max(settings.voxelMm, REGISTRATION_VOXEL_MM), extentMm=None)
+    grid = ChooseGrid(lambda: views, params, coarse)
+    volume, _ = FuseViews(views, params, grid, coarse)
+    return LargestComponent(ExtractMesh(volume))
+
+
+def RefineViews(sessions: list[list[ViewPackage]], params: PreprocessParams, settings: ReconstructSettings) -> tuple[list[ViewPackage], dict]:
+    """Turntable fit per session (the camera may move between sessions), then optional ICP over all views."""
+    report = {"mode": settings.refinePoses, "turntable": [], "icp": []}
+    refined: list[ViewPackage] = []
+    for views in sessions:
+        fit = FitTurntable([(view.rotation, view.translationMm) for view in views])
+        report["turntable"].append({"applied": fit.applied, "message": fit.message, "residualMm": None if math.isnan(fit.residualMm) else fit.residualMm})
+        refined.extend([WithPose(view, rotation, translation) for view, (rotation, translation) in zip(views, fit.poses)] if fit.applied else views)
+    if settings.refinePoses == "icp":
+        refined, report["icp"] = RefineWithIcp(refined, params, lambda views: RegistrationMesh(views, params, settings))
+    return refined, report
+
+
+def WriteRefinedPoses(outDir: Path, views: list[ViewPackage]) -> None:
+    poses = [{"index": view.index, "azimuthDeg": view.azimuthDeg, "rotation": view.rotation.tolist(), "translationMm": view.translationMm.tolist()} for view in views]
+    (outDir / REFINED_POSES_NAME).write_text(json.dumps(poses, indent=2))
+
+
 def Reconstruct(
     sessionDirs: list[Path],
     outDir: Path,
@@ -141,21 +176,33 @@ def Reconstruct(
     grid: GridSpec | None = None,
     settings: ReconstructSettings = ReconstructSettings(),
 ) -> ReconstructionReport:
+    if settings.refinePoses not in REFINE_MODES:
+        raise ValueError(f"--refine-poses must be one of {REFINE_MODES}")
     viewPaths = CollectViewPaths(sessionDirs)
     if not viewPaths:
         raise ValueError("the sessions contain no views")
-    grid = grid or ChooseGrid(viewPaths, params, settings)
+    refinement = {"mode": "none"}
+    refinedViews = None
+    if settings.refinePoses == "none":
+        viewSource = lambda: IterateViews(viewPaths)
+    else:
+        sessions = [[ReadView(path) for path in ListViewPaths(sessionDir)] for sessionDir in sessionDirs]
+        refinedViews, refinement = RefineViews([views for views in sessions if views], params, settings)
+        viewSource = lambda: iter(refinedViews)
+    grid = grid or ChooseGrid(viewSource, params, settings)
     start = time.monotonic()
-    volume, keptPercent = FuseViews(IterateViews(viewPaths), params, grid, settings)
+    volume, keptPercent = FuseViews(viewSource(), params, grid, settings)
     fusionSeconds = time.monotonic() - start
     lods = BuildLods(volume, taubinIterations=settings.taubinIterations)
     outDir.mkdir(parents=True, exist_ok=True)
+    if refinedViews is not None:
+        WriteRefinedPoses(outDir, refinedViews)
     lodReports = {}
     for name, lod in lods.items():
         glb = lod.ToGlb()
         (outDir / f"lod-{name}.glb").write_bytes(glb)
         lodReports[name] = LodReport(len(lod.mesh.faces), LOD_BUDGETS[name], ComponentCount(lod.mesh), len(glb), len(lod.ToCompressedGlb()))
-    report = ReconstructionReport(len(keptPercent), keptPercent, asdict(params), asdict(settings), asdict(grid), fusionSeconds, lodReports)
+    report = ReconstructionReport(len(keptPercent), keptPercent, asdict(params), asdict(settings), asdict(grid), refinement, fusionSeconds, lodReports)
     (outDir / REPORT_NAME).write_text(json.dumps(asdict(report), indent=2))
     return report
 
@@ -180,6 +227,7 @@ def ParseArgs() -> argparse.Namespace:
     parser.add_argument("--truncation-mm", type=float, default=settings.truncationMm)
     parser.add_argument("--taubin-iterations", type=int, default=settings.taubinIterations, help="0 disables smoothing")
     parser.add_argument("--no-weights", action="store_true", help="give every observation the same weight")
+    parser.add_argument("--refine-poses", choices=REFINE_MODES, default="none", help="turntable: fit the camera orbit; icp: also align views to the fused surface")
     parser.add_argument("--no-bilinear", action="store_true", help="sample depth and colour at the nearest pixel")
     return parser.parse_args()
 
@@ -206,6 +254,7 @@ def SettingsFromArgs(args: argparse.Namespace) -> ReconstructSettings:
         weights=not args.no_weights,
         bilinear=not args.no_bilinear,
         taubinIterations=args.taubin_iterations,
+        refinePoses=args.refine_poses,
     )
 
 
@@ -216,6 +265,10 @@ def PrintReport(report: ReconstructionReport, outDir: Path) -> None:
     print(f"{report.viewCount} views fused in {report.fusionSeconds:.1f} s; depth kept per view: min {lowest:.0f} %, median {np.median(report.keptPercentPerView):.0f} %")
     if lowest < MIN_KEPT_PERCENT_WARNING:
         print(f"warning: some views keep under {MIN_KEPT_PERCENT_WARNING:.0f} % of their depth; check the crop radius and depth range")
+    for entry in report.refinement.get("turntable", []):
+        print(f"turntable fit: {'applied' if entry['applied'] else 'skipped'} ({entry['message']})")
+    for entry in report.refinement.get("icp", []):
+        print(f"icp round {entry['round']}: mean rotation change {entry['meanRotationChangeDeg']:.2f} deg, mean camera move {entry['meanCameraMoveMm']:.2f} mm")
     for name, lod in report.lods.items():
         budget = "no cap" if lod.budget is None else f"budget {lod.budget}"
         status = "OK" if lod.passesGate else "FAIL"

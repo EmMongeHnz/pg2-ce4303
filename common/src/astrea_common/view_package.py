@@ -8,7 +8,8 @@ RGB and averaged depth at the same resolution, the depth intrinsics and the plat
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import math
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -93,3 +94,15 @@ def WriteManifest(sessionDir: str | Path, manifest: SessionManifest) -> None:
 
 def ReadManifest(sessionDir: str | Path) -> SessionManifest:
     return SessionManifest(**json.loads((Path(sessionDir) / MANIFEST_NAME).read_text()))
+
+
+def WithPose(view: ViewPackage, rotation: np.ndarray, translationMm: np.ndarray) -> ViewPackage:
+    """Copy of `view` with a new plate->camera pose; azimuth and elevation follow from the camera position."""
+    x, y, z = -rotation.T @ translationMm
+    return replace(
+        view,
+        rotation=rotation,
+        translationMm=translationMm,
+        azimuthDeg=math.degrees(math.atan2(y, x)) % 360.0,
+        elevationDeg=math.degrees(math.atan2(z, math.hypot(x, y))),
+    )
