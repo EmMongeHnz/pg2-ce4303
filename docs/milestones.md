@@ -129,8 +129,8 @@ Tareas:
 - [x] Prueba sintética: renderizar profundidad de una malla conocida (p. ej. Stanford bunny) desde poses conocidas. _`tests/spikes/m3-synthetic/` y `capture_service.synthetic_depth`; ver `docs/m3/synthetic-test.md`._
 - [x] TSDF propia en NumPy: cubo de 25 cm a 192³, canales `tsdf`, `weight`, `color`. _`astrea_common.tsdf`, integración por franjas, peso sin tope y `MergeVolumes` exacto (listo para M4)._
 - [ ] Preprocesado por vista: recorte por profundidad (20–50 cm), plano del plato por RANSAC, recorte cilíndrico, outliers.
-- [ ] Post-proceso: marching cubes, componente conexa mayor, limpieza de duplicados y degenerados, Taubin leve, decimación cuádrica (LOD-high ≈ 30k, LOD-low ≈ 8k), color por vértice. _Hechos marching cubes (solo en cubos totalmente observados) y componente conexa mayor en `coordinator.meshing`; faltan el resto._
-- [ ] Exportación GLB y compresión zstd.
+- [x] Post-proceso: marching cubes, componente conexa mayor, limpieza de duplicados y degenerados, Taubin leve, decimación cuádrica (LOD-high ≈ 30k, LOD-low ≈ 8k), color por vértice. _`coordinator.meshing` y `coordinator.postprocess`. En el bunny sintético los dos LOD salen con una sola componente y el mismo error de exactitud que la malla sin decimar. El color por vértice se prueba con un volumen sintético; falta verlo con RGB real._
+- [x] Exportación GLB y compresión zstd. _`Lod.ToGlb` / `ToCompressedGlb` y `astrea_common.compression`. Bunny sintético: LOD-high 594 KiB (485 KiB con zstd), LOD-low 160 KiB (131 KiB). Falta comprobar que el renderer carga el GLB generado._
 - [x] Medición de Chamfer contra la malla original. _`coordinator.mesh_metrics`: exactitud y completitud por separado._
 
 Entregables: `host/capture-service/`, núcleo de fusión reutilizable por `worker/`, post-proceso en `host/coordinator/`, prueba sintética en `tests/`.

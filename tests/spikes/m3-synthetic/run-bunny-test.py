@@ -31,6 +31,7 @@ from capture_service.synthetic_depth import MeshDepthRenderer
 from capture_service.synthetic_ring import ViewPose
 from coordinator.mesh_metrics import AccuracyStats, CompletenessStats
 from coordinator.meshing import ComponentCount, ExtractMesh, LargestComponent
+from coordinator.postprocess import BuildLods
 
 BUNNY_DIR = Path("out/datasets/stanford-bunny/extracted/bunny/reconstruction")
 INTRINSICS = Intrinsics(fx=434.1, fy=434.1, cx=240.0, cy=320.0, width=480, height=640)
@@ -74,6 +75,21 @@ def WithAzimuthError(rotation: np.ndarray, sigmaDeg: float, rng: np.random.Gener
     return rotation @ about
 
 
+def ReportLods(volume: TsdfVolume, reference: TriangleMesh, outDir: Path) -> None:
+    start = time.monotonic()
+    lods = BuildLods(volume)
+    print(f"LODs built in {time.monotonic() - start:.1f} s")
+    voxelMm = volume.grid.voxelMm
+    for name, lod in lods.items():
+        accuracy = AccuracyStats(lod.mesh, reference)
+        glb = lod.ToGlb()
+        compressed = lod.ToCompressedGlb()
+        (outDir / f"lod-{name}.glb").write_bytes(glb)
+        print(f"lod-{name}: {len(lod.mesh.faces)} faces, {ComponentCount(lod.mesh)} component(s), "
+              f"accuracy mean {accuracy.meanMm:.2f} mm ({accuracy.meanMm / voxelMm:.2f} vox) p95 {accuracy.p95Mm:.2f} mm, "
+              f"GLB {len(glb) / 1024:.0f} KiB, zstd {len(compressed) / 1024:.0f} KiB")
+
+
 def Main() -> None:
     args = ParseArgs()
     if not BUNNY_DIR.exists():
@@ -114,6 +130,8 @@ def Main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     WriteGlb(args.out_dir / "reconstruction.glb", mesh.vertices / 1000.0, mesh.faces)
     WriteGlb(args.out_dir / "reference.glb", reference.vertices / 1000.0, reference.faces)
+
+    ReportLods(volume, reference, args.out_dir)
 
     passed = accuracy.meanMm <= MEAN_LIMIT_VOXELS * voxelMm and accuracy.p95Mm <= P95_LIMIT_VOXELS * voxelMm
     print(f"gate (mean <= {MEAN_LIMIT_VOXELS} vox, p95 <= {P95_LIMIT_VOXELS} vox): {'PASS' if passed else 'FAIL'}")

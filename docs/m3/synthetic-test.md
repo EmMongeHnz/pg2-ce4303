@@ -40,6 +40,17 @@ Bunny completo (69 451 triángulos), 36 vistas por anillo salvo que se indique.
 - La completitud tiene máximos de 7–9 mm en zonas visibles pero estrechas (por ejemplo, entre las orejas).
 - Una corrida de 36 vistas toma unos 25 s en la PC de desarrollo: ≈ 0.2 s por vista en generar la profundidad sintética y ≈ 0.4 s por vista en integrarla en la TSDF de 192³. Los arreglos de la rejilla ocupan 78 MB. La velocidad de integración en la Pi 3 queda por medir (M4).
 
+## Post-proceso y LOD
+
+`run-bunny-test.py` termina construyendo los dos LOD con `coordinator.postprocess.BuildLods` y los exporta a `out/m3-bunny/lod-{high,low}.glb`. El orden es: marching cubes → soldar vértices y quitar caras degeneradas o repetidas → componente mayor → Taubin (10 iteraciones, λ = 0.5, μ = −0.53) → decimación cuádrica con `fast-simplification` (LOD-high desde la malla limpia, LOD-low desde LOD-high) → color del vóxel más cercano. La decimación puede desprender un triángulo suelto, así que se vuelve a conservar la componente mayor después de decimar.
+
+| LOD | Triángulos | Componentes | Exactitud media / p95 | GLB | GLB + zstd |
+|---|---|---|---|---|---|
+| high | 29 999 | 1 | 0.21 mm / 0.49 mm | 594 KiB | 485 KiB |
+| low | 8 000 | 1 | 0.21 mm / 0.49 mm | 160 KiB | 131 KiB |
+
+Construir ambos LOD toma ≈ 0.5 s en la PC de desarrollo. Los datos sintéticos no tienen color, así que el color por vértice solo se ejercita en las pruebas unitarias.
+
 ## Límites de esta prueba
 
 - **Piso de la métrica:** las distancias son de punto a muestra más cercana. Comparar el bunny de referencia contra sí mismo con los mismos parámetros da media 0.084 mm, p95 0.165 mm y máximo 0.40 mm, así que parte de los 0.21 mm medidos es sesgo de muestreo y no error de la reconstrucción.
