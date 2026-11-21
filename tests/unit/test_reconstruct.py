@@ -3,7 +3,9 @@ import json
 import numpy as np
 
 from astrea_common.view_package import WriteView
-from coordinator.reconstruct import Reconstruct
+import pytest
+
+from coordinator.reconstruct import ReconstructSettings, Reconstruct
 from sphere_scene import SMALL_GRID
 from test_distributed_equivalence import Views
 
@@ -40,3 +42,28 @@ def test_two_sessions_equal_one_session_with_all_the_views(tmp_path):
     split = Reconstruct([tmp_path / "first", tmp_path / "second"], tmp_path / "model-split", grid=SMALL_GRID)
     assert single.lods["high"].faces == split.lods["high"].faces
     assert (tmp_path / "model-all" / "lod-high.glb").read_bytes() == (tmp_path / "model-split" / "lod-high.glb").read_bytes()
+
+
+def test_grid_is_fitted_to_the_object_and_reports_a_full_model(tmp_path):
+    WriteSession(tmp_path / "scan", Views())
+    settings = ReconstructSettings(voxelMm=1.0)
+    report = Reconstruct([tmp_path / "scan"], tmp_path / "model", settings=settings)
+    shape = report.grid["shape"]
+    assert report.passesGate
+    assert all(30 < side < 80 for side in shape)
+    assert report.grid["voxelMm"] == 1.0
+    assert report.lods["full"].budget is None
+    assert report.lods["full"].faces >= report.lods["high"].faces >= report.lods["low"].faces
+    assert (tmp_path / "model" / "lod-full.glb").stat().st_size > 0
+
+
+def test_oversized_grid_is_refused_with_a_hint(tmp_path):
+    WriteSession(tmp_path / "scan", Views())
+    with pytest.raises(ValueError, match="--voxel-mm"):
+        Reconstruct([tmp_path / "scan"], tmp_path / "model", settings=ReconstructSettings(voxelMm=0.1, maxVoxels=1_000_000))
+
+
+def test_fixed_extent_cube_is_used_when_requested(tmp_path):
+    WriteSession(tmp_path / "scan", Views())
+    report = Reconstruct([tmp_path / "scan"], tmp_path / "model", settings=ReconstructSettings(voxelMm=2.5, extentMm=100.0))
+    assert tuple(report.grid["shape"]) == (40, 40, 40)

@@ -85,3 +85,34 @@ def test_lods_respect_budgets_and_export_to_glb(sphereVolume):
         position = document["accessors"][document["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
         assert position["count"] == len(lod.mesh.vertices)
         assert max(position["max"]) < 0.05
+
+
+def test_full_lod_is_not_decimated(sphereVolume):
+    lods = BuildLods(sphereVolume, highTriangles=1500, lowTriangles=400)
+    assert list(lods) == ["full", "high", "low"]
+    assert len(lods["full"].mesh.faces) > 1500
+    assert ComponentCount(lods["full"].mesh) == 1
+
+
+def test_taubin_iterations_can_be_disabled(sphereVolume):
+    smoothed = BuildLods(sphereVolume, highTriangles=1500, lowTriangles=400)["full"].mesh
+    raw = BuildLods(sphereVolume, highTriangles=1500, lowTriangles=400, taubinIterations=0)["full"].mesh
+    assert len(raw.faces) == len(smoothed.faces)
+    assert not np.allclose(raw.vertices, smoothed.vertices)
+
+
+def test_vertex_colour_does_not_bleed_from_unobserved_voxels():
+    volume = TsdfVolume(SMALL_GRID)
+    volume.weight[20:30, 20:30, 20:30] = 1.0
+    volume.color[20:30, 20:30, 20:30] = (200.0, 100.0, 50.0)
+    edgeVertex = np.array([SMALL_GRID.AxisMm(0)[29] + 0.9 * SMALL_GRID.voxelMm, SMALL_GRID.AxisMm(1)[25], SMALL_GRID.AxisMm(2)[25]])
+    assert np.all(SampleVertexColors(volume, edgeVertex[None, :]) == (200, 100, 50))
+
+
+def test_vertex_colour_interpolates_between_observed_voxels():
+    volume = TsdfVolume(SMALL_GRID)
+    volume.weight[20:22, 20:22, 20:22] = 1.0
+    volume.color[20, 20:22, 20:22] = 0.0
+    volume.color[21, 20:22, 20:22] = 100.0
+    middle = np.array([SMALL_GRID.AxisMm(0)[20] + 0.5 * SMALL_GRID.voxelMm, SMALL_GRID.AxisMm(1)[20], SMALL_GRID.AxisMm(2)[20]])
+    assert SampleVertexColors(volume, middle[None, :])[0, 0] == 50

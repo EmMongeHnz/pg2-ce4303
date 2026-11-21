@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import fast_simplification
@@ -23,6 +24,7 @@ TAUBIN_LAMBDA = 0.5
 TAUBIN_MU = -0.53
 DECIMATION_AGGRESSIVENESS = 5.0
 MM_PER_METRE = 1000.0
+MIN_COLOR_WEIGHT = 1e-9
 
 
 @dataclass(frozen=True)
@@ -91,23 +93,44 @@ def Decimate(mesh: TriangleMesh, targetFaces: int) -> TriangleMesh:
 
 
 def SampleVertexColors(volume: TsdfVolume, vertices: np.ndarray) -> np.ndarray:
-    """Colour of the voxel that contains each vertex (nearest voxel centre)."""
+    """Trilinear colour at each vertex, using only observed voxels so unobserved (black) voxels do not bleed in."""
     grid = volume.grid
-    index = np.rint((vertices - np.array(grid.originMm)) / grid.voxelMm).astype(np.int64)
-    index = np.clip(index, 0, np.array(grid.shape) - 1)
-    return np.clip(np.rint(volume.color[index[:, 0], index[:, 1], index[:, 2]]), 0, 255).astype(np.uint8)
+    position = (vertices - np.array(grid.originMm)) / grid.voxelMm
+    base = np.floor(position).astype(np.int64)
+    fraction = position - base
+    last = np.array(grid.shape) - 1
+    total = np.zeros((len(vertices), 3))
+    weightSum = np.zeros(len(vertices))
+    for corner in itertools.product((0, 1), repeat=3):
+        offset = np.array(corner)
+        index = np.clip(base + offset, 0, last)
+        trilinear = np.prod(np.where(offset == 1, fraction, 1.0 - fraction), axis=1)
+        observed = volume.weight[index[:, 0], index[:, 1], index[:, 2]] > 0
+        weight = trilinear * observed
+        total += weight[:, None] * volume.color[index[:, 0], index[:, 1], index[:, 2]]
+        weightSum += weight
+    nearest = np.clip(np.rint(position).astype(np.int64), 0, last)
+    fallback = volume.color[nearest[:, 0], nearest[:, 1], nearest[:, 2]]
+    blended = np.where(weightSum[:, None] > MIN_COLOR_WEIGHT, total / np.maximum(weightSum, MIN_COLOR_WEIGHT)[:, None], fallback)
+    return np.clip(np.rint(blended), 0, 255).astype(np.uint8)
 
 
-def CleanMesh(volume: TsdfVolume) -> TriangleMesh:
+def CleanMesh(volume: TsdfVolume, taubinIterations: int = TAUBIN_ITERATIONS) -> TriangleMesh:
     mesh = RemoveDegenerate(ExtractMesh(volume))
-    return TaubinSmooth(LargestComponent(mesh))
+    return TaubinSmooth(LargestComponent(mesh), iterations=taubinIterations)
 
 
-def BuildLods(volume: TsdfVolume, highTriangles: int = LOD_HIGH_TRIANGLES, lowTriangles: int = LOD_LOW_TRIANGLES) -> dict[str, Lod]:
-    """LOD-high is decimated from the cleaned mesh and LOD-low from LOD-high, so both share the same silhouette."""
-    high = Decimate(CleanMesh(volume), highTriangles)
+def BuildLods(
+    volume: TsdfVolume,
+    highTriangles: int = LOD_HIGH_TRIANGLES,
+    lowTriangles: int = LOD_LOW_TRIANGLES,
+    taubinIterations: int = TAUBIN_ITERATIONS,
+) -> dict[str, Lod]:
+    """`full` is the cleaned mesh with no triangle cap; high comes from full and low from high, so all share one silhouette."""
+    full = CleanMesh(volume, taubinIterations)
+    high = Decimate(full, highTriangles)
     low = Decimate(high, lowTriangles)
     return {
         name: Lod(name, mesh, SampleVertexColors(volume, mesh.vertices))
-        for name, mesh in (("high", high), ("low", low))
+        for name, mesh in (("full", full), ("high", high), ("low", low))
     }
