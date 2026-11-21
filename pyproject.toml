@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 record3d = ["record3d>=1.4"]
+reconstruction = ["scikit-image>=0.22", "scipy>=1.11"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
