@@ -3,7 +3,7 @@
 Usage:
     uv run astrea-capture --name cup                       # live Record3D stream over USB
     uv run astrea-capture --name cup --r3d capture.r3d     # replay a Record3D export
-    uv run astrea-capture --name cup --layout hardware/aruco-ring/ring-layout.json --rotate 0
+    uv run astrea-capture --name cup --layout hardware/aruco-ring/out/ring-layout.json --rotate 0
 
 Turn the plate by hand and pause briefly every few degrees; a keyframe is saved when the pose is stable
 for ~0.5 s and the plate advanced at least --step-deg since the previous keyframe. The window shows the
