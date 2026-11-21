@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,18 @@ from astrea_common.rgbd_frame import RgbdFrame
 NEAR_M = 0.15
 FAR_M = 0.8
 STATS_STRIDE = 4
+STATUS_TOP_PX = 38
+STATUS_LEFT_PX = 6
+STATUS_LINE_HEIGHT_PX = 22
+STATUS_PADDING_PX = 6
+STATUS_TEXT_SCALE = 0.55
+STATUS_BOX_OPACITY = 0.6
+COUNTERCLOCKWISE_FLAGS = {
+    0: None,
+    90: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_CLOCKWISE,
+}
 
 
 def DescribeFrame(frame: RgbdFrame) -> str:
@@ -43,10 +56,47 @@ def DepthPreview(depthM: np.ndarray) -> np.ndarray:
     return cv2.bitwise_and(preview, preview, mask=hasDepth)
 
 
-def LivePreview(frame: RgbdFrame, fps: float) -> np.ndarray:
-    """RGB and coloured depth side by side, with the frame rate and depth statistics on top."""
-    rgb = cv2.cvtColor(frame.RgbAtDepthResolution(), cv2.COLOR_RGB2BGR)
-    panel = np.hstack([rgb, DepthPreview(frame.depthM)])
+@dataclass(frozen=True)
+class RgbAnnotation:
+    """Annotated copy of the RGB frame (same orientation as the frame) plus a status block to draw upright."""
+
+    image: np.ndarray
+    statusLines: list[str]
+    statusColor: tuple[int, int, int]
+
+
+def RotateCounterclockwise(image: np.ndarray, degrees: int) -> np.ndarray:
+    flag = COUNTERCLOCKWISE_FLAGS[degrees]
+    return image if flag is None else cv2.rotate(image, flag)
+
+
+def DrawStatusBlock(image: np.ndarray, lines: list[str], color: tuple[int, int, int]) -> None:
+    """Draw text lines over a darkened box so they stay readable on any background."""
+    textWidth = max(cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, STATUS_TEXT_SCALE, 1)[0][0] for line in lines)
+    top, left = STATUS_TOP_PX, STATUS_LEFT_PX
+    bottom = top + len(lines) * STATUS_LINE_HEIGHT_PX + STATUS_PADDING_PX
+    region = image[top:bottom, left : left + textWidth + 2 * STATUS_PADDING_PX]
+    cv2.addWeighted(region, 1.0 - STATUS_BOX_OPACITY, np.zeros_like(region), STATUS_BOX_OPACITY, 0.0, dst=region)
+    for row, line in enumerate(lines):
+        baseline = top + STATUS_PADDING_PX + (row + 1) * STATUS_LINE_HEIGHT_PX - 6
+        cv2.putText(image, line, (left + STATUS_PADDING_PX, baseline), cv2.FONT_HERSHEY_SIMPLEX, STATUS_TEXT_SCALE, color, 1, cv2.LINE_AA)
+
+
+def LivePreview(frame: RgbdFrame, fps: float, annotation: RgbAnnotation | None = None, rotationDeg: int = 0) -> np.ndarray:
+    """RGB and coloured depth side by side, with the frame rate and depth statistics on top.
+
+    `rotationDeg` turns both panels counterclockwise (0, 90, 180 or 270) before any text is drawn.
+    """
+    height, width = frame.depthM.shape
+    if annotation is None:
+        rgb = cv2.cvtColor(frame.RgbAtDepthResolution(), cv2.COLOR_RGB2BGR)
+    else:
+        rgb = cv2.resize(annotation.image, (width, height), interpolation=cv2.INTER_AREA)
+    rgb = np.ascontiguousarray(RotateCounterclockwise(rgb, rotationDeg))
+    depth = np.ascontiguousarray(RotateCounterclockwise(DepthPreview(frame.depthM), rotationDeg))
+    if annotation is not None:
+        DrawStatusBlock(rgb, annotation.statusLines, annotation.statusColor)
+    panel = np.hstack([rgb, depth])
     sampled = frame.depthM[::STATS_STRIDE, ::STATS_STRIDE]
     valid = sampled[sampled > 0]
     median = f"{np.median(valid):.3f} m" if len(valid) else "n/a"

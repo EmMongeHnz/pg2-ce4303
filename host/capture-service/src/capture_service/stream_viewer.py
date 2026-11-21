@@ -2,6 +2,8 @@
 
 Usage:
     uv run astrea-stream-viewer              # runs until q in the window, the window is closed, or Ctrl+C
+    uv run astrea-stream-viewer --ring       # also track the ArUco ring and show its pose
+    uv run astrea-stream-viewer --rotate 0   # show frames as received (portrait); default is 90
     uv run astrea-stream-viewer --list
     uv run astrea-stream-viewer --seconds 30
 
@@ -14,15 +16,19 @@ from __future__ import annotations
 import argparse
 import time
 from collections import deque
+from pathlib import Path
 
 import cv2
 
+from astrea_common.aruco_ring import RingLayout
 from capture_service.frame_dump import DescribeFrame, LivePreview
 from capture_service.record3d_stream import ListDevices, Record3dStream, Record3dUnavailable
+from capture_service.ring_overlay import RingOverlay
 
 WINDOW_NAME = "astrea-stream-viewer"
 FPS_WINDOW_FRAMES = 30
 IDLE_POLL_MS = 100
+DEFAULT_ROTATION_DEG = 90
 
 
 def ParseArgs() -> argparse.Namespace:
@@ -30,6 +36,9 @@ def ParseArgs() -> argparse.Namespace:
     parser.add_argument("--list", action="store_true", help="list connected devices and exit")
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--seconds", type=float, default=0.0, help="stop after this long; 0 means no limit")
+    parser.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=DEFAULT_ROTATION_DEG, help="rotate the view counterclockwise, in degrees")
+    parser.add_argument("--ring", action="store_true", help="track the ArUco ring and overlay its pose")
+    parser.add_argument("--layout", type=Path, default=None, help="ring-layout.json from generate-ring.py")
     return parser.parse_args()
 
 
@@ -49,7 +58,7 @@ def Expired(start: float, seconds: float) -> bool:
     return seconds > 0 and time.monotonic() - start >= seconds
 
 
-def Show(stream: Record3dStream, seconds: float) -> int:
+def Show(stream: Record3dStream, seconds: float, overlay: RingOverlay | None, rotationDeg: int) -> int:
     start = time.monotonic()
     arrivals: deque = deque(maxlen=FPS_WINDOW_FRAMES)
     totalFrames = 0
@@ -74,7 +83,8 @@ def Show(stream: Record3dStream, seconds: float) -> int:
             print(DescribeFrame(frame))
         totalFrames += 1
         arrivals.append(time.monotonic())
-        cv2.imshow(WINDOW_NAME, LivePreview(frame, MeasuredFps(arrivals)))
+        annotation = overlay.Render(frame) if overlay else None
+        cv2.imshow(WINDOW_NAME, LivePreview(frame, MeasuredFps(arrivals), annotation, rotationDeg))
         if QuitRequested(1):
             break
     return totalFrames
@@ -89,7 +99,8 @@ def Main() -> None:
     try:
         with Record3dStream(args.device) as stream:
             print(f"connected, device type: {'TrueDepth' if stream.isTrueDepth else 'LiDAR'}")
-            totalFrames = Show(stream, args.seconds)
+            overlay = RingOverlay(RingLayout.Load(args.layout)) if args.ring else None
+            totalFrames = Show(stream, args.seconds, overlay, args.rotate)
     except KeyboardInterrupt:
         return
     finally:

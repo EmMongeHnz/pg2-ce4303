@@ -18,7 +18,7 @@ Pending inputs: delivery date and team size.
 ```
 uv sync                                   # Python deps (add --extra record3d for USB streaming)
 uv run pytest                             # unit tests (tests/unit)
-uv run astrea-stream-viewer               # live RGB + depth view of the Record3D USB stream (q or Ctrl+C to quit)
+uv run astrea-stream-viewer               # live RGB + depth view of the Record3D USB stream (q or Ctrl+C to quit; --ring adds the ArUco pose overlay)
 cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build renderer/build -j
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
