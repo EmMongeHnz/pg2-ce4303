@@ -79,7 +79,7 @@ cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build 
 renderer/build/renderer --mode viewer --model out/scans/cup/model/lod-full.glb --up-axis z
 ```
 
-La primera compilación descarga raylib (requiere red). Los GLB de `astrea-reconstruct` salen en el marco del plato (z hacia arriba), por eso hace falta `--up-axis z`; `--rotate-z <grados>` gira el modelo alrededor de ese eje vertical (por ejemplo `--rotate-z 90`). Comprobar que el modelo carga, rota con el ratón y tiene colores. Repetir con `lod-high.glb` y `lod-low.glb`. En la Pi, ver spike 0c en `docs/m0/spike-report.md` (el modo `hologram` también necesita `--up-axis z` con estos GLB).
+La primera compilación descarga raylib (requiere red). Los GLB de `astrea-reconstruct` salen en el marco del plato (z hacia arriba), por eso hace falta `--up-axis z`; `--rotate-z <grados>` gira el modelo alrededor de ese eje vertical (por ejemplo `--rotate-z 90`). Los GLB con más de 65 535 vértices (normalmente `lod-full`) se escriben en varias primitivas, porque raylib guarda los índices en 16 bits y trunca los de 32. Comprobar que el modelo carga, rota con el ratón y tiene colores. Repetir con `lod-high.glb` y `lod-low.glb`. En la Pi, ver spike 0c en `docs/m0/spike-report.md` (el modo `hologram` también necesita `--up-axis z` con estos GLB).
 
 ## 5. Gate de ángulo ArUco (< 1°)
 
