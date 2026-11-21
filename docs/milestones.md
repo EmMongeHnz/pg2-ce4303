@@ -54,8 +54,8 @@ Después de M0, M1, M2 y M3 avanzan en paralelo sin bloquearse entre sí.
 
 Tareas:
 - [x] Estructura del repo según el plan (`driver/holo-io/`, `device-agent/`, `host/capture-service/`, `host/coordinator/`, `worker/`, `renderer/`, `common/`, `pki/`, `hardware/`, `tests/`, `docs/`) y build base de cada parte. Compilado en la PC; falta compilar en worker B y en la Pi.
-- [ ] **0a** Record3D → RGB-D en Python sobre Linux (`record3d` + `usbmuxd`, streaming USB comprado). Respaldo: parsear un `.r3d` exportado. _Software listo; falta probar con el iPhone y con un `.r3d` real._
-- [ ] **0b** Pose con el anillo ArUco sobre la base manual, usando el RGB de Record3D (`cv2.aruco` + `solvePnP`). Incluye el generador del anillo en `hardware/`. _Generador, estimador y barrido sintético aprobados; falta el anillo impreso._
+- [x] **0a** Record3D → RGB-D en Python sobre Linux (`record3d` + `usbmuxd`, streaming USB comprado). Respaldo: parsear un `.r3d` exportado. _Aprobado por USB (≈27 fps, 480×640 con intrínsecas); el respaldo `.r3d` no hizo falta y su lector sigue sin probarse con un archivo real._
+- [x] **0b** Pose con el anillo ArUco sobre la base manual, usando el RGB de Record3D (`cv2.aruco` + `solvePnP`). Incluye el generador del anillo en `hardware/`. _Aprobado con el anillo real: estática, pasos de 30° y oclusión._
 - [ ] **0c** raylib con `PLATFORM_DRM` en la Pi 3 (Raspberry Pi OS Lite 64 bits) renderizando un GLB de ~8k triángulos. _Renderer y builds DRM/GLES2 verificados en PC; falta medir fps en la Pi 3._
 - [ ] **0d** Prueba de reflejo con el monitor boca arriba y el panel a 45°. _Modo `hologram` listo; falta la prueba óptica._
 

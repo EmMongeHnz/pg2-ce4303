@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-AstreaView has finished the software side of **M0** (viability spikes and repo skeleton). The hardware-bound checks (real Record3D capture, ArUco on the printed ring, raylib DRM fps on the Pi 3, reflection test) are pending; their steps and results live in `docs/m0/spike-report.md`.
+AstreaView has finished the software side of **M0** (viability spikes and repo skeleton). Spikes 0a (Record3D over USB) and 0b (ArUco ring pose) passed on real hardware. The remaining hardware-bound checks (raylib DRM fps on the Pi 3, reflection test, skeleton build on worker B and the Pi) are pending; their steps and results live in `docs/m0/spike-report.md`.
 
 - `especificacion.md`: the course assignment (Principios de SO, Proyecto Grupal 2). It defines the four required areas: a custom kernel driver (GPIO preferred), hardware with movement or interesting processing, distributed processing on ≥3 nodes (no shared directories), and encryption of all network traffic. It also defines the IEEE-Trans documentation sections and the required diagrams (architecture, components, sequence, features).
 - `implementation-plan.md`: the approved design and the source of truth for architecture, planned repo layout, protocol, phases and acceptance criteria. Read it before proposing or writing code.

@@ -5,8 +5,8 @@ Estado al abrir el PR de M0. Lo que se puede hacer sin hardware está implementa
 | Spike | Hecho sin hardware | Falta con hardware | Estado |
 |---|---|---|---|
 | Esqueleto | Estructura del repo, build de Python, renderer y módulo de kernel; pruebas unitarias | Compilar en las tres máquinas | Parcial |
-| 0a Record3D | Lector `.r3d`, ingesta USB con `record3d`, volcado a PNG/NPY/PLY, `.r3d` sintético | Streaming real desde el iPhone 12 | Código listo |
-| 0b Anillo ArUco | Generador del anillo, estimador de pose, barrido sintético con oclusiones | Anillo impreso y grabación real | Sintético aprobado |
+| 0a Record3D | Lector `.r3d`, ingesta USB con `record3d`, volcado a PNG/NPY/PLY, `.r3d` sintético; streaming USB real medido | Probar el lector `.r3d` con un archivo real (respaldo, no requerido) | **Aprobado por USB** |
+| 0b Anillo ArUco | Generador del anillo, estimador de pose, barrido sintético con oclusiones; pruebas reales estática, de pasos de 30° y de oclusión | n/a | **Aprobado con datos reales** |
 | 0c raylib DRM | Renderer de escritorio con GLB de 8k, modo `hologram`, benchmark, build DRM y GLES2 verificados | ≥30 fps en la Pi 3 | Código listo |
 | 0d Reflejo | Modo `hologram` (fondo negro, espejado, autorrotación) | Prueba con monitor y panel | Pendiente |
 
@@ -53,9 +53,24 @@ uv run pytest                 # 46 pruebas, < 2 s
    ```
    Si el lector falla, guardar el mensaje de error y la salida de `unzip -l captura.r3d`: con eso se ajusta el parser.
 
-**Gate 0a:** frames RGB-D con intrínsecas en Python. La comprobación cruzada de intrínsecas y unidades se hace en 0b (residuo profundidad-vs-pose).
+### Resultado con el iPhone (USB)
 
-**Decisión:** _pendiente_ — USB (captura automática) o `.r3d` (selección de vistas posterior).
+| Métrica | Valor |
+|---|---|
+| Tipo de dispositivo | TrueDepth (cámara frontal) |
+| Resolución RGB y profundidad | 480×640 (llega en vertical) |
+| Intrínsecas | fx = fy ≈ 434.1, cx = 240, cy = 320 |
+| Tasa sostenida sin guardar frames | ≈ 27 fps |
+| Profundidad válida | ≈ 78–86 %, mediana ≈ 0.3–0.5 m con el plato a 25–32 cm |
+
+- Al guardar PNG/NPY/PLY el promedio baja (6.5 fps en la primera prueba), probablemente por la escritura a disco; no afecta la captura real.
+- Los frames llegan **en vertical**: para verlos derechos hay que rotarlos 90° antihorario (`astrea-stream-viewer` lo hace por defecto, `--rotate` lo cambia).
+- Herramienta de observación: `uv run astrea-stream-viewer [--ring]` muestra RGB y profundidad en vivo y, con `--ring`, la pose del anillo.
+- `Record3dStream` necesita `Close()` (con espera corta tras `disconnect()`); sin eso el proceso termina con segmentation fault al salir.
+
+**Gate 0a:** cumplido por USB: frames RGB-D con intrínsecas en Python. La comprobación cruzada de intrínsecas y unidades se hizo en 0b (residuo profundidad-vs-pose, de pocos milímetros).
+
+**Decisión:** captura por **USB** (captura automática). El respaldo `.r3d` no hizo falta; su lector sigue sin probarse con un archivo real.
 
 ---
 
@@ -121,9 +136,24 @@ Sin manos (`--hands 0`), las 432 vistas quedan bajo 0.34° de error.
    - **Oclusión:** tapar con la mano distintas partes del anillo. Anotar en qué casos se pierde la pose y con cuántos marcadores sigue.
 6. Revisar el **residuo profundidad-vs-pose** del resumen (profundidad medida en el centro de cada marcador menos la z que predice la pose ArUco). Si la mediana es de pocos milímetros, las intrínsecas, las unidades y la alineación RGB/profundidad de 0a están bien. Un residuo proporcional a la distancia indica intrínsecas mal escaladas; uno constante indica un desfase de profundidad.
 
-**Gate 0b:** pose estable con parte de los marcadores tapados, en datos reales.
+### Resultado con el anillo real
 
-**Decisión:** _pendiente_ — confirmar el anillo de 12 × 24 mm o ajustar el tamaño (`--marker-size-mm`, `--plate-diameter-mm`) según la distancia real de captura.
+Anillo impreso con los valores por defecto (12 marcadores de 24 mm), teléfono a 25–32 cm con elevación de 38–53°.
+
+| Prueba | Resultado | Criterio |
+|---|---|---|
+| Estática | Desviación circular del azimut 0.10–0.11° (con 10–20 s de grabación), 0.02–0.04° tras ajustar el ángulo del teléfono | < 0.2° |
+| Residuo profundidad-vs-pose | De −3 a +0.9 mm según la pose (mediana de pocos milímetros) | pocos mm |
+| Pasos de 30° | Detección adecuada (reportado tras la prueba; valores no registrados aquí) | 30° ± 1° |
+| Oclusión | Resultado esperado (reportado tras la prueba; valores no registrados aquí) | pose estable con parte de los marcadores tapados |
+
+- La primera grabación estática mostró 7 de 256 frames (2.7 %) con una pose incorrecta aceptada (elevación −5°, 55 px de reproyección). El estimador ahora rechaza poses con error RMS > 3 px o con la cámara bajo el plato (commit `b9e42db`). Esos frames pasan a "sin pose".
+- El residuo cambió de signo entre posiciones del teléfono (+0.8, −0.4, −3, −0.3 mm), todos pequeños; conviene vigilarlo en M3 por si hay un desfase de escala del anillo impreso.
+- Recomendación de captura (del barrido sintético): elevación 20–50°, exigir ≥ 5 marcadores para aceptar un keyframe.
+
+**Gate 0b:** cumplido en datos reales.
+
+**Decisión:** se mantiene el anillo de 12 × 24 mm (el usado en las pruebas) sin cambios.
 
 ---
 
