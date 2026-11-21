@@ -41,6 +41,19 @@ def DepthPreview(depthM: np.ndarray) -> np.ndarray:
     return preview
 
 
+def LivePreview(frame: RgbdFrame, fps: float) -> np.ndarray:
+    """RGB and coloured depth side by side, with the frame rate and depth statistics on top."""
+    rgb = cv2.cvtColor(frame.RgbAtDepthResolution(), cv2.COLOR_RGB2BGR)
+    panel = np.hstack([rgb, DepthPreview(frame.depthM)])
+    valid = frame.depthM[frame.depthM > 0]
+    median = f"{np.median(valid):.3f} m" if len(valid) else "n/a"
+    text = f"{fps:.1f} fps  frame {frame.index}  valid {100 * len(valid) / frame.depthM.size:.0f} %  median {median}"
+    cv2.putText(panel, text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    scale = f"depth {NEAR_M:.2f} m (red) to {FAR_M:.2f} m (blue), black = no data"
+    cv2.putText(panel, scale, (rgb.shape[1] + 10, panel.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    return panel
+
+
 def SaveFrame(frame: RgbdFrame, directory: Path) -> None:
     """Write rgb.png, depth.png (colour preview), depth.npy and a coloured PLY for one frame."""
     directory.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ Usage:
     uv sync --extra record3d
     uv run tests/spikes/0a-record3d/stream-record3d.py --list
     uv run tests/spikes/0a-record3d/stream-record3d.py --seconds 10 --save-dir out/ --save-every 60
+    uv run tests/spikes/0a-record3d/stream-record3d.py --seconds 300 --show
 
 Prints the measured frame rate, the frame sizes, intrinsics and depth statistics,
 and optionally saves frames (RGB, depth, .ply) for an offline check.
@@ -16,7 +17,9 @@ import argparse
 import time
 from pathlib import Path
 
-from capture_service.frame_dump import DescribeFrame, SaveFrame
+import cv2
+
+from capture_service.frame_dump import DescribeFrame, LivePreview, SaveFrame
 from capture_service.record3d_stream import ListDevices, Record3dStream
 
 REPORT_INTERVAL_S = 1.0
@@ -29,6 +32,7 @@ def ParseArgs() -> argparse.Namespace:
     parser.add_argument("--seconds", type=float, default=10.0)
     parser.add_argument("--save-dir", type=Path, default=None)
     parser.add_argument("--save-every", type=int, default=60, help="save one frame every N frames")
+    parser.add_argument("--show", action="store_true", help="live window with RGB and depth side by side (q quits)")
     return parser.parse_args()
 
 
@@ -44,6 +48,7 @@ def Main() -> None:
     lastReport = start
     framesSinceReport = 0
     totalFrames = 0
+    currentFps = 0.0
     while time.monotonic() - start < args.seconds and not stream.stopped:
         frame = stream.Read()
         if totalFrames == 0:
@@ -54,8 +59,13 @@ def Main() -> None:
         framesSinceReport += 1
         now = time.monotonic()
         if now - lastReport >= REPORT_INTERVAL_S:
-            print(f"{framesSinceReport / (now - lastReport):.1f} fps")
+            currentFps = framesSinceReport / (now - lastReport)
+            print(f"{currentFps:.1f} fps")
             lastReport, framesSinceReport = now, 0
+        if args.show:
+            cv2.imshow("stream-record3d", LivePreview(frame, currentFps))
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
     elapsed = time.monotonic() - start
     print(f"received {totalFrames} frames in {elapsed:.1f} s ({totalFrames / elapsed:.1f} fps average)")
 
