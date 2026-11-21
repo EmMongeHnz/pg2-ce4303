@@ -2,6 +2,7 @@
  * AstreaView renderer (spike 0c prototype).
  *
  *   renderer --mode viewer   --model scan.glb            # PC window, mouse orbit
+ *   renderer --mode viewer   --model lod-full.glb --up-axis z --rotate-z 90   # astrea-reconstruct output
  *   renderer --mode hologram --lod low                   # Pi: black, mirrored, auto-rotate
  *   renderer --mode hologram --model test.glb --benchmark 20
  *
@@ -32,16 +33,25 @@ static int CountTriangles(Model model) {
     return triangles;
 }
 
+/* Spin about the model's own z axis first, then stand a z-up model on the viewer's y axis. */
+static Matrix ModelOrientation(const RendererOptions *options) {
+    Matrix orientation = MatrixRotateZ(options->rotateZDeg * DEG2RAD);
+    if (options->upAxis == UP_AXIS_Z) orientation = MatrixMultiply(orientation, MatrixRotateX(-90.0f * DEG2RAD));
+    return orientation;
+}
+
 /* Centres the model and scales it to a unit bounding sphere so the camera works for any scan. */
-static void NormaliseModel(Model *model) {
+static void NormaliseModel(Model *model, const RendererOptions *options) {
     BoundingBox box = GetModelBoundingBox(*model);
     Vector3 center = Vector3Scale(Vector3Add(box.min, box.max), 0.5f);
     float radius = Vector3Length(Vector3Subtract(box.max, center));
     float scale = radius > 0.0f ? 1.0f / radius : 1.0f;
-    model->transform = MatrixMultiply(MatrixTranslate(-center.x, -center.y, -center.z), MatrixScale(scale, scale, scale));
+    Matrix centred = MatrixMultiply(MatrixTranslate(-center.x, -center.y, -center.z), ModelOrientation(options));
+    model->transform = MatrixMultiply(centred, MatrixScale(scale, scale, scale));
 }
 
-static bool LoadScene(const char *path, Shader shader, LoadedModel *loaded) {
+static bool LoadScene(const RendererOptions *options, Shader shader, LoadedModel *loaded) {
+    const char *path = options->modelPath;
     if (!FileExists(path)) {
         TraceLog(LOG_ERROR, "RENDERER: model not found: %s", path);
         return false;
@@ -53,7 +63,7 @@ static bool LoadScene(const char *path, Shader shader, LoadedModel *loaded) {
         return false;
     }
     for (int i = 0; i < loaded->model.materialCount; i++) loaded->model.materials[i].shader = shader;
-    NormaliseModel(&loaded->model);
+    NormaliseModel(&loaded->model, options);
     TraceLog(LOG_INFO, "RENDERER: loaded %s (%d meshes, %d triangles)", path, loaded->model.meshCount, loaded->triangles);
     return true;
 }
@@ -107,7 +117,7 @@ int main(int argc, char **argv) {
 
     Shading shading = LoadShading(options.mode == MODE_HOLOGRAM ? HOLOGRAM_AMBIENT : VIEWER_AMBIENT);
     LoadedModel loaded = {0};
-    if (!LoadScene(options.modelPath, shading.shader, &loaded)) {
+    if (!LoadScene(&options, shading.shader, &loaded)) {
         UnloadShading(shading);
         CloseWindow();
         return 1;
