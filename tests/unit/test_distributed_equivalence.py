@@ -4,7 +4,7 @@ the partial volumes gives the same volume as fusing every view in one node."""
 import numpy as np
 
 from astrea_common.view_package import ViewPackage
-from astrea_common.view_preprocess import PreprocessParams, PreprocessView
+from astrea_common.view_preprocess import ComputeViewWeights, PreprocessParams, PreprocessView
 from astrea_common.tsdf import MergeVolumes, TsdfVolume
 from capture_service.synthetic_ring import PlaneDepthMapM, ViewPose
 from sphere_scene import COLOR, INTRINSICS, SMALL_GRID, SPHERE_RADIUS_MM, SphereDepthMm
@@ -19,7 +19,8 @@ def SphereOnPlateView(index: int, azimuthDeg: float, elevationDeg: float) -> Vie
     sphereMm = SphereDepthMm(rotation, translation)
     planeMm = PlaneDepthMapM(pose, INTRINSICS.Matrix(), INTRINSICS.width, INTRINSICS.height) * 1000.0
     depthMm = np.where((sphereMm > 0) & ((planeMm == 0) | (sphereMm < planeMm)), sphereMm, planeMm)
-    rgb = np.full((INTRINSICS.height, INTRINSICS.width, 3), COLOR, dtype=np.uint8)
+    rows, cols = np.indices((INTRINSICS.height, INTRINSICS.width))
+    rgb = np.stack([(cols * 255 // INTRINSICS.width + index * 7) % 256, rows * 255 // INTRINSICS.height, np.full(rows.shape, COLOR[2])], axis=-1).astype(np.uint8)
     return ViewPackage(index, rgb, depthMm / 1000.0, INTRINSICS, rotation, translation, azimuthDeg, elevationDeg, 0.0)
 
 
@@ -30,7 +31,9 @@ def Views() -> list[ViewPackage]:
 def Fuse(views: list[ViewPackage]) -> TsdfVolume:
     volume = TsdfVolume(SMALL_GRID)
     for view in views:
-        volume.Integrate(PreprocessView(view, PreprocessParams()), view.intrinsics, view.rotation, view.translationMm, view.rgb)
+        cleaned = PreprocessView(view, PreprocessParams())
+        weights = ComputeViewWeights(cleaned, view.intrinsics)
+        volume.Integrate(cleaned, view.intrinsics, view.rotation, view.translationMm, view.rgb, weights=weights)
     return volume
 
 
@@ -41,9 +44,9 @@ def test_split_and_merged_volumes_equal_single_node_fusion():
     merged = parts[0]
     for part in parts[1:]:
         merged = MergeVolumes(merged, part)
-    assert np.array_equal(merged.weight, single.weight)
-    assert np.abs(merged.tsdf - single.tsdf).max() < 1e-5
-    assert np.array_equal(merged.color, single.color)
+    assert np.allclose(merged.weight, single.weight, rtol=1e-5)
+    assert np.abs(merged.tsdf - single.tsdf).max() < 1e-4
+    assert np.abs(merged.color - single.color).max() < 1e-2
 
 
 def test_plate_does_not_enter_the_volume():

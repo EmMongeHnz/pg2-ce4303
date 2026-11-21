@@ -95,7 +95,7 @@ def SampleVertexColors(volume: TsdfVolume, vertices: np.ndarray) -> np.ndarray:
     grid = volume.grid
     index = np.rint((vertices - np.array(grid.originMm)) / grid.voxelMm).astype(np.int64)
     index = np.clip(index, 0, np.array(grid.shape) - 1)
-    return volume.color[index[:, 0], index[:, 1], index[:, 2]]
+    return np.clip(np.rint(volume.color[index[:, 0], index[:, 1], index[:, 2]]), 0, 255).astype(np.uint8)
 
 
 def CleanMesh(volume: TsdfVolume) -> TriangleMesh:
