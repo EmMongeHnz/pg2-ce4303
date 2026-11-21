@@ -29,7 +29,7 @@ from astrea_common.view_package import ListViewPaths, ReadView, ViewPackage, Wit
 from astrea_common.mesh import TriangleMesh
 from astrea_common.view_preprocess import ComputeViewWeights, PlatePoints, PreprocessParams, PreprocessView
 from coordinator.meshing import ComponentCount, ExtractMesh, LargestComponent
-from coordinator.pose_refinement import FitTurntable, RefineWithIcp
+from coordinator.pose_refinement import FitTurntable, RefineAzimuthWithIcp, RefineWithIcp
 from coordinator.postprocess import LOD_HIGH_TRIANGLES, LOD_LOW_TRIANGLES, TAUBIN_ITERATIONS, BuildLods
 
 LOD_BUDGETS = {"full": None, "high": LOD_HIGH_TRIANGLES, "low": LOD_LOW_TRIANGLES}
@@ -40,7 +40,7 @@ DEFAULT_TRUNCATION_MM = 5.2
 DEFAULT_MAX_VOXELS = 100_000_000
 GRID_MARGIN_TRUNCATIONS = 1.5
 BYTES_PER_GIB = 1024**3
-REFINE_MODES = ("none", "turntable", "icp")
+REFINE_MODES = ("none", "turntable", "azimuth", "icp")
 REGISTRATION_VOXEL_MM = 1.3
 REFINED_POSES_NAME = "refined-poses.json"
 
@@ -155,12 +155,17 @@ def RefineViews(sessions: list[list[ViewPackage]], params: PreprocessParams, set
     """Turntable fit per session (the camera may move between sessions), then optional ICP over all views."""
     report = {"mode": settings.refinePoses, "turntable": [], "icp": []}
     refined: list[ViewPackage] = []
+    orbits: list[tuple | None] = []
     for views in sessions:
         fit = FitTurntable([(view.rotation, view.translationMm) for view in views])
         report["turntable"].append({"applied": fit.applied, "message": fit.message, "residualMm": None if math.isnan(fit.residualMm) else fit.residualMm})
         refined.extend([WithPose(view, rotation, translation) for view, (rotation, translation) in zip(views, fit.poses)] if fit.applied else views)
+        orbits.extend([(fit.axis, fit.origin) if fit.applied else None] * len(views))
+    buildModel = lambda views: RegistrationMesh(views, params, settings)
     if settings.refinePoses == "icp":
-        refined, report["icp"] = RefineWithIcp(refined, params, lambda views: RegistrationMesh(views, params, settings))
+        refined, report["icp"] = RefineWithIcp(refined, params, buildModel)
+    elif settings.refinePoses == "azimuth":
+        refined, report["icp"] = RefineAzimuthWithIcp(refined, orbits, params, buildModel)
     return refined, report
 
 
@@ -227,7 +232,7 @@ def ParseArgs() -> argparse.Namespace:
     parser.add_argument("--truncation-mm", type=float, default=settings.truncationMm)
     parser.add_argument("--taubin-iterations", type=int, default=settings.taubinIterations, help="0 disables smoothing")
     parser.add_argument("--no-weights", action="store_true", help="give every observation the same weight")
-    parser.add_argument("--refine-poses", choices=REFINE_MODES, default="none", help="turntable: fit the camera orbit; icp: also align views to the fused surface")
+    parser.add_argument("--refine-poses", choices=REFINE_MODES, default="none", help="turntable: fit the camera orbit; azimuth: also align each view about the turntable axis; icp: align all six degrees of freedom")
     parser.add_argument("--no-bilinear", action="store_true", help="sample depth and colour at the nearest pixel")
     return parser.parse_args()
 

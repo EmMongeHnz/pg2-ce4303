@@ -51,6 +51,34 @@ Bunny completo (69 451 triángulos), 36 vistas por anillo salvo que se indique.
 
 Construir ambos LOD toma ≈ 0.5 s en la PC de desarrollo. Los datos sintéticos no tienen color, así que el color por vértice solo se ejercita en las pruebas unitarias.
 
+## Fidelidad máxima: comparación sintética
+
+Mismo bunny, 36 vistas a 35° de elevación y las opciones de `run-bunny-test.py` (exactitud reconstrucción → original sobre la malla sin decimar, en mm; el piso de la métrica sigue siendo ≈ 0.084 mm de media). Con `--voxel-mm` la rejilla se ajusta a la caja del bunny de referencia.
+
+| Variante | Media | p95 | Gate |
+|---|---|---|---|
+| Referencia (vóxel 1.30 mm, pesos unitarios, bilineal) | 0.21 | 0.50 | Cumple |
+| Muestreo del píxel más cercano (`--no-bilinear`) | 0.21 | 0.50 | Cumple |
+| Vóxel 0.65 mm y pesos por vista | 0.11 | 0.23 | Cumple |
+| Ruido σ = 1 mm, vóxel 1.30 mm | 0.21 | 0.51 | Cumple |
+| Ruido σ = 1 mm, vóxel 0.65 mm y pesos | 0.15 | 0.30 | Cumple |
+
+Suavizado Taubin sobre `lod-full` (ruido σ = 1 mm, vóxel 0.65 mm): 0 iteraciones 0.15 / 0.30, 5 iteraciones 0.14 / 0.28, 10 iteraciones 0.13 / 0.27. Se conservan las 10 iteraciones por defecto.
+
+**Refinamiento de pose** (`--refine-poses`; media / p95 en mm):
+
+| Error inyectado | Sin refinar | `icp` (6 grados de libertad) | `azimuth` |
+|---|---|---|---|
+| Azimut σ = 1° | 0.21 / 0.51 | 0.28 / 0.65 | 0.21 / 0.51 |
+| Azimut σ = 3° | 0.28 / 0.79 | 0.28 / 0.66 | 0.24 / 0.55 |
+| Azimut σ = 8° | 1.45 / 6.35 (no cumple) | 0.92 / 5.48 (no cumple) | 0.68 / 2.97 (cumple) |
+| Inclinación σ = 1° y traslación σ = 1 mm | 0.39 / 1.07 | 0.35 / 0.84 | 0.30 / 0.73 |
+
+- `turntable` solo, con inclinación y traslación: 0.30 / 0.73. No cambia el azimut, como se esperaba.
+- El error medio de rotación baja con `azimuth` de 0.61° a 0.13° (σ = 1°), de 1.83° a 0.42° (σ = 3°) y de 4.88° a 1.92° (σ = 8°).
+- `icp` de seis grados de libertad **empeora** la malla con error de azimut pequeño (σ = 1°) aunque reduzca el error de rotación: el ruido de la superficie arrastra las cámaras fuera de su órbita. `azimuth` solo gira cada vista alrededor del eje del plato y es la opción recomendada cuando la cámara está fija.
+- El muestreo bilineal no se nota en el bunny sin ruido; sí se nota en la prueba unitaria de un plano inclinado (`tests/unit/test_tsdf_fidelity.py`).
+
 ## Límites de esta prueba
 
 - **Piso de la métrica:** las distancias son de punto a muestra más cercana. Comparar el bunny de referencia contra sí mismo con los mismos parámetros da media 0.084 mm, p95 0.165 mm y máximo 0.40 mm, así que parte de los 0.21 mm medidos es sesgo de muestreo y no error de la reconstrucción.

@@ -11,7 +11,7 @@ from astrea_common.view_preprocess import PreprocessParams  # noqa: E402
 from capture_service.ring_pose import RotationErrorDeg  # noqa: E402
 from capture_service.synthetic_depth import MeshDepthRenderer  # noqa: E402
 from capture_service.synthetic_ring import ViewPose  # noqa: E402
-from coordinator.pose_refinement import RefineWithIcp  # noqa: E402
+from coordinator.pose_refinement import RefineAzimuthWithIcp, RefineWithIcp  # noqa: E402
 from coordinator.reconstruct import ReconstructSettings, RegistrationMesh  # noqa: E402
 from sphere_scene import INTRINSICS, UvSphereMesh  # noqa: E402
 
@@ -62,3 +62,21 @@ def test_icp_leaves_correct_poses_almost_untouched():
     truth, exact = MakeViews(azimuthErrorDeg=0.0)
     refined, _ = RefineWithIcp(exact, PARAMS, lambda views: RegistrationMesh(views, PARAMS, SETTINGS))
     assert MeanRotationError(refined, truth) < 0.3
+
+
+def test_azimuth_icp_turns_views_about_the_axis_without_moving_cameras_off_their_orbit():
+    truth, measured = MakeViews(azimuthErrorDeg=3.0)
+    orbit = (np.array([0.0, 0.0, 1.0]), np.zeros(3))
+    refined, summaries = RefineAzimuthWithIcp(measured, [orbit] * len(measured), PARAMS, lambda views: RegistrationMesh(views, PARAMS, SETTINGS))
+    before, after = MeanRotationError(measured, truth), MeanRotationError(refined, truth)
+    assert after < 0.5 * before
+    radiiBefore = [np.hypot(*(-(view.rotation.T @ view.translationMm))[:2]) for view in measured]
+    radiiAfter = [np.hypot(*(-(view.rotation.T @ view.translationMm))[:2]) for view in refined]
+    assert np.allclose(radiiBefore, radiiAfter, atol=1e-6)
+    assert all(summary["meanCameraMoveMm"] < 15.0 for summary in summaries)
+
+
+def test_azimuth_icp_leaves_views_without_an_orbit_alone():
+    _, measured = MakeViews(azimuthErrorDeg=3.0)
+    refined, _ = RefineAzimuthWithIcp(measured, [None] * len(measured), PARAMS, lambda views: RegistrationMesh(views, PARAMS, SETTINGS))
+    assert all(np.array_equal(a.rotation, b.rotation) for a, b in zip(measured, refined))

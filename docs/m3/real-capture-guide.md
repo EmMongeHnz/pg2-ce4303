@@ -56,7 +56,8 @@ Si la rejilla no cabe en memoria el comando se detiene y sugiere `--voxel-mm` o 
 | Opción | Qué hace |
 |---|---|
 | `--refine-poses turntable` | Con el teléfono fijo, ajusta la órbita de la cámara alrededor del plato (por sesión) y corrige inclinación, distancia y ruido de la pose. **No corrige el error de azimut.** Se omite sola si la cámara se movió |
-| `--refine-poses icp` | Además alinea cada vista a la superficie fusionada de todas. Es lo único que corrige el azimut, pero no sirve con objetos simétricos de revolución (vasos, esferas) y con poses ya buenas puede añadir ≈ 0.3° de ruido; compara con y sin |
+| `--refine-poses azimuth` | Además de `turntable`, alinea cada vista a la superficie fusionada de todas girándola solo alrededor del eje del plato. Es lo único que corrige el azimut sin mover la cámara de su órbita y la opción recomendada con el teléfono fijo (en la prueba sintética redujo el error con azimut de 3° y de 8° y no empeoró con 1°). No sirve con objetos simétricos de revolución (vasos, esferas) |
+| `--refine-poses icp` | Alinea los seis grados de libertad de cada vista. Sirve si la cámara se movió, pero con poses casi buenas **empeora** la malla; compara con y sin |
 | `--taubin-iterations N` | Suavizado de la malla; `0` lo desactiva |
 | `--truncation-mm`, `--no-weights`, `--no-bilinear` | Para comparar el efecto del truncamiento, de los pesos por vista y del muestreo bilineal |
 

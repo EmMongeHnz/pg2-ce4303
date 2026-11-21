@@ -7,8 +7,11 @@ Two steps, both optional and run on the coordinator before any distribution:
   jitter errors. It cannot change the azimuth of a view: an azimuth error is itself a valid point of the
   circle, so only ICP can correct it.
 * `RefineWithIcp` aligns the points of every view to the surface fused from all views (point-to-plane),
-  in a few rounds, with the update of each round bounded. Azimuth is unobservable for an object that is
-  rotationally symmetric about the turntable axis, and then it stays as measured.
+  in a few rounds, with the update of each round bounded. It has six degrees of freedom per view, so noise
+  in the surface can pull the cameras off their orbit.
+* `RefineAzimuthWithIcp` does the same but only turns each view about the fitted turntable axis (one degree
+  of freedom), which is all a fixed camera can change. Azimuth is unobservable for an object that is
+  rotationally symmetric about the axis, and then it stays as measured.
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ class TurntableFit:
     poses: list[Pose] | None
     residualMm: float
     message: str
+    axis: np.ndarray | None = None
+    origin: np.ndarray | None = None
 
     @property
     def applied(self) -> bool:
@@ -111,7 +116,7 @@ def FitTurntable(poses: list[Pose], maxResidualMm: float = MAX_TURNTABLE_RESIDUA
         centre = origin + radius * (math.cos(angle) * first + math.sin(angle) * second)
         rotation = (RotationAboutAxis(axis, angle) @ commonOrientation).T
         refined.append((rotation, -rotation @ centre))
-    return TurntableFit(refined, residual, f"circle radius {radius:.1f} mm, residual {residual:.2f} mm")
+    return TurntableFit(refined, residual, f"circle radius {radius:.1f} mm, residual {residual:.2f} mm", axis, origin)
 
 
 def SubsamplePoints(points: np.ndarray, maxPoints: int) -> np.ndarray:
@@ -166,11 +171,39 @@ def AlignView(cameraPoints: np.ndarray, pose: Pose, surface, settings: IcpSettin
     return refinedRotation, translationMm - refinedRotation @ deltaTranslation
 
 
-def RefineWithIcp(
+def AlignViewAboutAxis(cameraPoints: np.ndarray, pose: Pose, orbit: Pose, surface, settings: IcpSettings) -> Pose:
+    """Like AlignView but the only motion is a rotation about the turntable axis `orbit = (axis, origin)`."""
+    rotation, translationMm = pose
+    axis, origin = orbit
+    vertices, normals, tree = surface
+    plate = (cameraPoints - translationMm) @ rotation
+    angle = 0.0
+    limit = math.radians(settings.maxRotationDeg)
+    for _ in range(settings.iterations):
+        deltaRotation = RotationAboutAxis(axis, angle)
+        moved = (plate - origin) @ deltaRotation.T + origin
+        distance, nearest = tree.query(moved)
+        paired = distance < settings.maxPairDistanceMm
+        if paired.sum() < MIN_ICP_PAIRS:
+            break
+        n = normals[nearest[paired]]
+        x = moved[paired]
+        residual = np.einsum("ij,ij->i", x - vertices[nearest[paired]], n)
+        slope = np.einsum("ij,ij->i", np.cross(axis, x - origin), n)
+        step = -float(slope @ residual) / (float(slope @ slope) * (1.0 + REGULARISATION) + 1e-12)
+        angle = float(np.clip(angle + step, -limit, limit))
+    deltaRotation = RotationAboutAxis(axis, angle)
+    deltaTranslation = origin - deltaRotation @ origin
+    refinedRotation = rotation @ deltaRotation.T
+    return refinedRotation, translationMm - refinedRotation @ deltaTranslation
+
+
+def RunIcpRounds(
     views: list[ViewPackage],
     params: PreprocessParams,
     buildModel: Callable[[list[ViewPackage]], TriangleMesh],
-    settings: IcpSettings = IcpSettings(),
+    settings: IcpSettings,
+    align: Callable[[int, np.ndarray, Pose, tuple], Pose],
 ) -> tuple[list[ViewPackage], list[dict]]:
     """Rounds of: fuse all views into a surface, then align each view to it. Returns the views and one summary per round."""
     cameraPoints = [SubsamplePoints(BackProject(PreprocessView(view, params), view.intrinsics)[0], settings.maxPointsPerView) for view in views]
@@ -181,11 +214,35 @@ def RefineWithIcp(
         normals = VertexNormals(model.vertices, model.faces)
         surface = (model.vertices, normals, cKDTree(model.vertices))
         updated, rotationChangesDeg, translationChangesMm = [], [], []
-        for view, points in zip(current, cameraPoints):
-            rotation, translationMm = AlignView(points, (view.rotation, view.translationMm), surface, settings)
+        for index, (view, points) in enumerate(zip(current, cameraPoints)):
+            rotation, translationMm = align(index, points, (view.rotation, view.translationMm), surface)
             rotationChangesDeg.append(math.degrees(RotationAngleRad(rotation @ view.rotation.T)))
             translationChangesMm.append(float(np.linalg.norm(CameraCentre((rotation, translationMm)) - CameraCentre((view.rotation, view.translationMm)))))
             updated.append(WithPose(view, rotation, translationMm))
         current = updated
         summaries.append({"round": roundIndex + 1, "meanRotationChangeDeg": float(np.mean(rotationChangesDeg)), "meanCameraMoveMm": float(np.mean(translationChangesMm))})
     return current, summaries
+
+
+def RefineWithIcp(
+    views: list[ViewPackage],
+    params: PreprocessParams,
+    buildModel: Callable[[list[ViewPackage]], TriangleMesh],
+    settings: IcpSettings = IcpSettings(),
+) -> tuple[list[ViewPackage], list[dict]]:
+    return RunIcpRounds(views, params, buildModel, settings, lambda index, points, pose, surface: AlignView(points, pose, surface, settings))
+
+
+def RefineAzimuthWithIcp(
+    views: list[ViewPackage],
+    orbits: list[Pose | None],
+    params: PreprocessParams,
+    buildModel: Callable[[list[ViewPackage]], TriangleMesh],
+    settings: IcpSettings = IcpSettings(),
+) -> tuple[list[ViewPackage], list[dict]]:
+    """`orbits[i]` is (axis, origin) of the turntable fitted for view i's session, or None to leave that view alone."""
+
+    def Align(index: int, points: np.ndarray, pose: Pose, surface) -> Pose:
+        return pose if orbits[index] is None else AlignViewAboutAxis(points, pose, orbits[index], surface, settings)
+
+    return RunIcpRounds(views, params, buildModel, settings, Align)

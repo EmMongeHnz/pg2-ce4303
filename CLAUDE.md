@@ -21,7 +21,7 @@ uv sync --extra record3d --extra reconstruction
 uv run pytest                             # unit tests (tests/unit)
 uv run astrea-stream-viewer               # live RGB + depth view of the Record3D USB stream (q or Ctrl+C to quit; --ring adds the ArUco pose overlay)
 uv run astrea-capture --name <scan>        # scan capture: ArUco pose, keyframe every ~10°, session in out/scans/<scan>/ (--r3d replays an export)
-uv run astrea-reconstruct out/scans/<scan> # preprocess + TSDF + meshing + LODs; writes model/lod-{full,high,low}.glb and report.json (--refine-poses turntable|icp, --voxel-mm)
+uv run astrea-reconstruct out/scans/<scan> # preprocess + TSDF + meshing + LODs; writes model/lod-{full,high,low}.glb and report.json (--refine-poses turntable|azimuth|icp, --voxel-mm)
 cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build renderer/build -j
                                           # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
