@@ -1,0 +1,4 @@
+[console_scripts]
+astrea-coordinator = coordinator.__main__:Main
+astrea-device-agent = device_agent.__main__:Main
+astrea-worker = worker.__main__:Main

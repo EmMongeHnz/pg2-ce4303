@@ -1,0 +1,41 @@
+[project]
+name = "astrea-view"
+version = "0.0.1"
+description = "Distributed 3D scanning with a Pepper's Ghost holographic display"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.8",
+    "pillow>=10",
+    "pyliblzfse>=0.4",
+]
+
+[project.optional-dependencies]
+record3d = ["record3d>=1.4"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+astrea-coordinator = "coordinator.__main__:Main"
+astrea-worker = "worker.__main__:Main"
+astrea-device-agent = "device_agent.__main__:Main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["astrea_common", "capture_service", "coordinator", "worker", "device_agent"]
+
+[tool.setuptools.package-dir]
+astrea_common = "common/src/astrea_common"
+capture_service = "host/capture-service/src/capture_service"
+coordinator = "host/coordinator/src/coordinator"
+worker = "worker/src/worker"
+device_agent = "device-agent/src/device_agent"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
