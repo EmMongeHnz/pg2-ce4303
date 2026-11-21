@@ -17,6 +17,8 @@ from astrea_common.aruco_ring import RingLayout
 MIN_MARKERS = 2
 OUTLIER_MIN_PX = 1.0
 OUTLIER_FACTOR = 3.0
+MAX_RMS_ERROR_PX = 3.0
+MIN_ELEVATION_DEG = 0.0
 
 
 @dataclass(frozen=True)
@@ -107,9 +109,19 @@ class RingPoseEstimator:
             if not isOutlier or len(markerIds) == self.minMarkers:
                 rotation, _ = cv2.Rodrigues(rvec)
                 rmsError = float(np.sqrt(np.mean(markerErrors**2)))
-                return RingPose(rotation, tvec.reshape(3), tuple(markerIds), rmsError)
+                pose = RingPose(rotation, tvec.reshape(3), tuple(markerIds), rmsError)
+                return pose if self._IsPlausible(pose) else None
             del markerIds[worst]
         return None
+
+    @staticmethod
+    def _IsPlausible(pose: RingPose) -> bool:
+        """Reject solutions that fit badly as a whole or put the camera under the plate.
+
+        The per-marker outlier filter compares against the median error, so it cannot
+        notice a solve where every marker disagrees (a flipped planar solution).
+        """
+        return pose.reprojectionErrorPx <= MAX_RMS_ERROR_PX and pose.elevationDeg > MIN_ELEVATION_DEG
 
     def _Solve(self, detections: dict[int, np.ndarray], markerIds: list[int]):
         objectPoints = np.concatenate([self.layout.MarkerCorners(i) for i in markerIds]).astype(np.float64)
