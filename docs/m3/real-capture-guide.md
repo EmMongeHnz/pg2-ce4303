@@ -13,7 +13,7 @@ Escanea un objeto sobre el plato manual con el anillo ArUco y obtén los GLB `lo
 
 ```bash
 uv sync --extra record3d --extra reconstruction
-uv run pytest                      # 108 pruebas en verde
+uv run pytest                      # todas las pruebas en verde
 ```
 
 ## 1. Comprobar la entrada
@@ -32,7 +32,7 @@ uv run astrea-capture --name cup
 
 Añade `--layout <ring-layout.json>` solo si el anillo no usa los valores por defecto. Opciones útiles: `--flip-horizontal` (si no se detecta ningún marcador por imagen espejada) y `--rotate 0|90|180|270` (orientación de la vista previa).
 
-1. Gira el plato **despacio**, unos 10° por vez, y detente ~1 s en cada posición. Se guarda un keyframe cuando la pose lleva ~0.5 s estable y el plato avanzó al menos 10° desde el anterior.
+1. Gira el plato **despacio**, unos 10° por vez, y detente ~1.5 s en cada posición. Se guarda un keyframe cuando la pose lleva `--stable-seconds` (1.2 s) estable y el plato avanzó al menos 10° desde el anterior; todos los frames de esa ventana (hasta `--average-frames`, 60) se promedian, tanto la profundidad como la pose.
 2. La ventana muestra `keyframes N` y un anillo de cobertura abajo a la derecha: verde = sector con keyframe, gris = falta, línea amarilla = posición actual. El texto se pone verde al guardar uno.
 3. Da una vuelta completa (≈ 36 keyframes). Opcional: segunda pasada con el teléfono más alto con otro `--name` (por ejemplo `cup-high`).
 4. Cierra con `q`. El resultado queda en `out/scans/cup/` (`manifest.json` y `views/*.npz`).
@@ -47,7 +47,18 @@ uv run astrea-reconstruct out/scans/cup
 uv run astrea-reconstruct out/scans/cup out/scans/cup-high --out out/scans/cup/model
 ```
 
-Muestra el porcentaje de profundidad que se conserva por vista, los triángulos de cada LOD frente a su presupuesto (30 000 y 8 000), el número de componentes y los tamaños de GLB (con y sin zstd). Escribe `out/scans/cup/model/lod-high.glb`, `lod-low.glb` y `report.json`. El código de salida es 1 si algún LOD excede el presupuesto o no es una sola componente (gate de M3).
+Ajusta la rejilla al objeto con vóxel de 0.65 mm (`--voxel-mm`; con más resolución que un píxel del sensor no hay más información) y muestra el porcentaje de profundidad que se conserva por vista, los triángulos de cada LOD, el número de componentes y los tamaños de GLB (con y sin zstd). Escribe `lod-full.glb` (sin tope de triángulos), `lod-high.glb` (30 000), `lod-low.glb` (8 000, para la Pi) y `report.json` en `out/scans/cup/model/`. El código de salida es 1 si `high` o `low` exceden su presupuesto o no son una sola componente (gate de M3).
+
+Si la rejilla no cabe en memoria el comando se detiene y sugiere `--voxel-mm` o `--max-voxels` (cada vóxel usa 20 bytes).
+
+### Más fidelidad
+
+| Opción | Qué hace |
+|---|---|
+| `--refine-poses turntable` | Con el teléfono fijo, ajusta la órbita de la cámara alrededor del plato (por sesión) y corrige inclinación, distancia y ruido de la pose. **No corrige el error de azimut.** Se omite sola si la cámara se movió |
+| `--refine-poses icp` | Además alinea cada vista a la superficie fusionada de todas. Es lo único que corrige el azimut, pero no sirve con objetos simétricos de revolución (vasos, esferas) y con poses ya buenas puede añadir ≈ 0.3° de ruido; compara con y sin |
+| `--taubin-iterations N` | Suavizado de la malla; `0` lo desactiva |
+| `--truncation-mm`, `--no-weights`, `--no-bilinear` | Para comparar el efecto del truncamiento, de los pesos por vista y del muestreo bilineal |
 
 ### Ajustes si el resultado no es bueno
 
@@ -64,10 +75,10 @@ Muestra el porcentaje de profundidad que se conserva por vista, los triángulos 
 
 ```bash
 cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build renderer/build -j
-renderer/build/renderer --mode viewer --model out/scans/cup/model/lod-high.glb
+renderer/build/renderer --mode viewer --model out/scans/cup/model/lod-full.glb --up-axis z
 ```
 
-La primera compilación descarga raylib (requiere red). Comprobar que el modelo carga, rota con el ratón y tiene colores. Repetir con `lod-low.glb`. En la Pi, ver spike 0c en `docs/m0/spike-report.md`.
+La primera compilación descarga raylib (requiere red). Los GLB de `astrea-reconstruct` salen en el marco del plato (z hacia arriba), por eso hace falta `--up-axis z`; `--rotate-z <grados>` gira el modelo alrededor de ese eje vertical (por ejemplo `--rotate-z 90`). Comprobar que el modelo carga, rota con el ratón y tiene colores. Repetir con `lod-high.glb` y `lod-low.glb`. En la Pi, ver spike 0c en `docs/m0/spike-report.md` (el modo `hologram` también necesita `--up-axis z` con estos GLB).
 
 ## 5. Gate de ángulo ArUco (< 1°)
 

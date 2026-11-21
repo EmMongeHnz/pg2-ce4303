@@ -190,6 +190,8 @@ En la PC de desarrollo (sin GPU, llvmpipe por software) da ~180 fps a 1280×720 
    En DRM el page flip va sincronizado con el monitor, así que el máximo es ~60 fps.
 5. Anotar en una tabla: resolución, espejado sí/no, fps promedio, 1 % low, `vcgencmd measure_temp` al final.
 
+> Los GLB que produce `astrea-reconstruct` (M3) están en el marco del plato con z hacia arriba: con ellos el renderer necesita `--up-axis z` (y opcionalmente `--rotate-z <grados>`), también en modo `hologram`. Los GLB de prueba de este spike son y-up y no lo necesitan.
+
 **Gate 0c:** ≥ 30 fps con 8k triángulos. Si no llega: bajar a 720p, quitar el espejado por render texture (se puede espejar con la matriz de proyección) o reducir LOD-low, y documentarlo.
 
 **Decisión:** _pendiente_ — resolución y LOD-low definitivos para la Pi.
