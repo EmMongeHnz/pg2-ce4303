@@ -18,6 +18,9 @@ DEVICE_TYPE_TRUEDEPTH = 0
 DEVICE_TYPE_LIDAR = 1
 
 
+DISCONNECT_SETTLE_S = 0.25
+
+
 class Record3dUnavailable(RuntimeError):
     pass
 
@@ -48,11 +51,25 @@ class Record3dStream:
             )
         self._frameReady = threading.Event()
         self._stopped = threading.Event()
+        self._closed = False
         self._frameCount = 0
         self._session = record3d.Record3DStream()
         self._session.on_new_frame = self._frameReady.set
         self._session.on_stream_stopped = self._stopped.set
         self._session.connect(devices[deviceIndex])
+
+    def __enter__(self) -> "Record3dStream":
+        return self
+
+    def __exit__(self, *exceptionInfo) -> None:
+        self.Close()
+
+    def Close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._session.disconnect()
+            # disconnect() returns before the native thread is done; exiting right after segfaults.
+            time.sleep(DISCONNECT_SETTLE_S)
 
     @property
     def deviceType(self) -> int:

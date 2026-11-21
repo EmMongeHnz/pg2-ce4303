@@ -42,30 +42,30 @@ def Main() -> None:
         for index, (productId, udid) in enumerate(ListDevices()):
             print(f"[{index}] product id {productId}, udid {udid}")
         return
-    stream = Record3dStream(args.device)
-    print(f"connected, device type: {'TrueDepth' if stream.isTrueDepth else 'LiDAR'}")
-    start = time.monotonic()
-    lastReport = start
-    framesSinceReport = 0
-    totalFrames = 0
-    currentFps = 0.0
-    while time.monotonic() - start < args.seconds and not stream.stopped:
-        frame = stream.Read()
-        if totalFrames == 0:
-            print(DescribeFrame(frame))
-        if args.save_dir and totalFrames % args.save_every == 0:
-            SaveFrame(frame, args.save_dir)
-        totalFrames += 1
-        framesSinceReport += 1
-        now = time.monotonic()
-        if now - lastReport >= REPORT_INTERVAL_S:
-            currentFps = framesSinceReport / (now - lastReport)
-            print(f"{currentFps:.1f} fps")
-            lastReport, framesSinceReport = now, 0
-        if args.show:
-            cv2.imshow("stream-record3d", LivePreview(frame, currentFps))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+    with Record3dStream(args.device) as stream:
+        print(f"connected, device type: {'TrueDepth' if stream.isTrueDepth else 'LiDAR'}")
+        start = time.monotonic()
+        lastReport = start
+        framesSinceReport = 0
+        totalFrames = 0
+        currentFps = 0.0
+        while time.monotonic() - start < args.seconds and not stream.stopped:
+            frame = stream.Read()
+            if totalFrames == 0:
+                print(DescribeFrame(frame))
+            if args.save_dir and totalFrames % args.save_every == 0:
+                SaveFrame(frame, args.save_dir)
+            totalFrames += 1
+            framesSinceReport += 1
+            now = time.monotonic()
+            if now - lastReport >= REPORT_INTERVAL_S:
+                currentFps = framesSinceReport / (now - lastReport)
+                print(f"{currentFps:.1f} fps")
+                lastReport, framesSinceReport = now, 0
+            if args.show:
+                cv2.imshow("stream-record3d", LivePreview(frame, currentFps))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
     elapsed = time.monotonic() - start
     print(f"received {totalFrames} frames in {elapsed:.1f} s ({totalFrames / elapsed:.1f} fps average)")
 

@@ -51,10 +51,10 @@ def Frames(args):
         return
     from capture_service.record3d_stream import Record3dStream
 
-    stream = Record3dStream(args.device)
-    deadline = time.monotonic() + args.seconds
-    while time.monotonic() < deadline and not stream.stopped:
-        yield stream.Read()
+    with Record3dStream(args.device) as stream:
+        deadline = time.monotonic() + args.seconds
+        while time.monotonic() < deadline and not stream.stopped:
+            yield stream.Read()
 
 
 def Annotate(bgr, estimator, detections, pose) -> np.ndarray:
