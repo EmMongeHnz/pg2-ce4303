@@ -12,6 +12,7 @@ from astrea_common.rgbd_frame import RgbdFrame
 
 NEAR_M = 0.15
 FAR_M = 0.8
+STATS_STRIDE = 4
 
 
 def DescribeFrame(frame: RgbdFrame) -> str:
@@ -35,19 +36,21 @@ def DescribeFrame(frame: RgbdFrame) -> str:
 
 
 def DepthPreview(depthM: np.ndarray) -> np.ndarray:
-    normalized = np.clip((depthM - NEAR_M) / (FAR_M - NEAR_M), 0.0, 1.0)
-    preview = cv2.applyColorMap((255 * (1.0 - normalized)).astype(np.uint8), cv2.COLORMAP_TURBO)
-    preview[depthM <= 0] = 0
-    return preview
+    nearest = np.minimum(depthM, FAR_M)
+    scaled = cv2.convertScaleAbs(nearest, alpha=-255.0 / (FAR_M - NEAR_M), beta=255.0 * FAR_M / (FAR_M - NEAR_M))
+    preview = cv2.applyColorMap(scaled, cv2.COLORMAP_TURBO)
+    hasDepth = cv2.compare(depthM, 0.0, cv2.CMP_GT)
+    return cv2.bitwise_and(preview, preview, mask=hasDepth)
 
 
 def LivePreview(frame: RgbdFrame, fps: float) -> np.ndarray:
     """RGB and coloured depth side by side, with the frame rate and depth statistics on top."""
     rgb = cv2.cvtColor(frame.RgbAtDepthResolution(), cv2.COLOR_RGB2BGR)
     panel = np.hstack([rgb, DepthPreview(frame.depthM)])
-    valid = frame.depthM[frame.depthM > 0]
+    sampled = frame.depthM[::STATS_STRIDE, ::STATS_STRIDE]
+    valid = sampled[sampled > 0]
     median = f"{np.median(valid):.3f} m" if len(valid) else "n/a"
-    text = f"{fps:.1f} fps  frame {frame.index}  valid {100 * len(valid) / frame.depthM.size:.0f} %  median {median}"
+    text = f"{fps:.1f} fps  frame {frame.index}  valid {100 * len(valid) / sampled.size:.0f} %  median {median}"
     cv2.putText(panel, text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     scale = f"depth {NEAR_M:.2f} m (red) to {FAR_M:.2f} m (blue), black = no data"
     cv2.putText(panel, scale, (rgb.shape[1] + 10, panel.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
