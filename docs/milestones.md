@@ -53,11 +53,11 @@ Después de M0, M1, M2 y M3 avanzan en paralelo sin bloquearse entre sí.
 **Objetivo:** confirmar o descartar las cuatro apuestas técnicas antes de construir encima, y dejar el repositorio listo para trabajar en paralelo.
 
 Tareas:
-- [ ] Estructura del repo según el plan (`driver/holo-io/`, `device-agent/`, `host/capture-service/`, `host/coordinator/`, `worker/`, `renderer/`, `common/`, `pki/`, `hardware/`, `tests/`, `docs/`) y build base de cada parte.
-- [ ] **0a** Record3D → RGB-D en Python sobre Linux (`record3d` + `usbmuxd`, streaming USB comprado). Respaldo: parsear un `.r3d` exportado.
-- [ ] **0b** Pose con el anillo ArUco sobre la base manual, usando el RGB de Record3D (`cv2.aruco` + `solvePnP`). Incluye el generador del anillo en `hardware/`.
-- [ ] **0c** raylib con `PLATFORM_DRM` en la Pi 3 (Raspberry Pi OS Lite 64 bits) renderizando un GLB de ~8k triángulos.
-- [ ] **0d** Prueba de reflejo con el monitor boca arriba y el panel a 45°.
+- [x] Estructura del repo según el plan (`driver/holo-io/`, `device-agent/`, `host/capture-service/`, `host/coordinator/`, `worker/`, `renderer/`, `common/`, `pki/`, `hardware/`, `tests/`, `docs/`) y build base de cada parte. Compilado en la PC; falta compilar en worker B y en la Pi.
+- [ ] **0a** Record3D → RGB-D en Python sobre Linux (`record3d` + `usbmuxd`, streaming USB comprado). Respaldo: parsear un `.r3d` exportado. _Software listo; falta probar con el iPhone y con un `.r3d` real._
+- [ ] **0b** Pose con el anillo ArUco sobre la base manual, usando el RGB de Record3D (`cv2.aruco` + `solvePnP`). Incluye el generador del anillo en `hardware/`. _Generador, estimador y barrido sintético aprobados; falta el anillo impreso._
+- [ ] **0c** raylib con `PLATFORM_DRM` en la Pi 3 (Raspberry Pi OS Lite 64 bits) renderizando un GLB de ~8k triángulos. _Renderer y builds DRM/GLES2 verificados en PC; falta medir fps en la Pi 3._
+- [ ] **0d** Prueba de reflejo con el monitor boca arriba y el panel a 45°. _Modo `hologram` listo; falta la prueba óptica._
 
 Entregables: scripts de los spikes en `tests/spikes/` (o rama aparte), nota corta con resultado y decisión de cada spike.
 
@@ -108,6 +108,7 @@ Tareas:
 - [ ] `config.toml` con la lista estática de nodos.
 - [ ] Conexión y heartbeat entre los 3 nodos reales.
 - [ ] Especificación del protocolo en `docs/` coherente con N1–N4 del diagrama de bloques.
+- [ ] Certificados de ejemplo para la entrega: `.gitignore` excluye `pki/**/*.key` y `pki/**/*.pem`, así que los de ejemplo (CA y nodos con claves de prueba, nunca las de la demo) se agregan con `git add -f` o con una excepción `!` en `.gitignore`. Se incluyen en el paquete final junto con `config.toml` y el overlay (ver M7).
 
 Entregables: `common/` (protocolo, TLS, config), `pki/`, pruebas de protocolo, especificación escrita.
 

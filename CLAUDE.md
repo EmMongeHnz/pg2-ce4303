@@ -26,6 +26,10 @@ dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 
 Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`.
 
+Generated files are not versioned (see `.gitignore`): `out/`, build directories, `renderer/models/*.glb` (regenerate with `tests/spikes/0c-renderer/make-test-glb.py`), `*.r3d`, `.vscode/settings.json` and private keys under `pki/`. Example certificates for the delivery are the only exception and are added explicitly (see M2 in `docs/milestones.md`).
+
+Keep `docs/milestones.md` current: when a task or gate is completed or partially advanced, tick its checkbox or annotate its status in the same change that advances it. Do not tick a gate that still depends on pending hardware checks.
+
 Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags are defined in the diagram legend and must stay consistent with the protocol messages in `implementation-plan.md`.
 
 ## Code layout
