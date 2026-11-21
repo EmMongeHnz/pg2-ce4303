@@ -16,7 +16,8 @@ Pending inputs: delivery date and team size.
 ## Commands
 
 ```
-uv sync                                   # Python deps (add --extra record3d for USB streaming)
+uv sync --extra record3d --extra reconstruction
+                                          # Python deps; always pass the extras you use, a plain `uv sync` removes them
 uv run pytest                             # unit tests (tests/unit)
 uv run astrea-stream-viewer               # live RGB + depth view of the Record3D USB stream (q or Ctrl+C to quit; --ring adds the ArUco pose overlay)
 cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build renderer/build -j
@@ -25,7 +26,7 @@ make -C driver/holo-io                    # kernel module, needs kernel headers 
 dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 ```
 
-Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`.
+Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`. The M3 synthetic test is `tests/spikes/m3-synthetic/` (`fetch-bunny.py` once, then `run-bunny-test.py`); the bunny is downloaded to `out/datasets/` and never versioned, and must be credited to the Stanford Computer Graphics Laboratory.
 
 Generated files are not versioned (see `.gitignore`): `out/`, build directories, `renderer/models/*.glb` (regenerate with `tests/spikes/0c-renderer/make-test-glb.py`), `*.r3d`, `.vscode/settings.json` and private keys under `pki/`. Example certificates for the delivery are the only exception and are added explicitly (see M2 in `docs/milestones.md`).
 
@@ -36,6 +37,7 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 ## Code layout
 
 - Python is a single uv project (`pyproject.toml` at the root). Each component keeps its package under `<component>/src/<package>/` and is mapped in `[tool.setuptools.package-dir]`: `astrea_common`, `capture_service`, `coordinator`, `worker`, `device_agent`.
+- The TSDF core (`astrea_common.tsdf`, NumPy only) is shared by the workers and the coordinator and works in millimetres in the plate frame; meshing and metrics (`scikit-image`, `scipy`, extra `reconstruction`) live in `coordinator`. Integration uses unit weights with no cap so partial volumes merge exactly.
 - The ArUco ring geometry (`astrea_common.aruco_ring.RingLayout`) is shared by the generator and the pose estimator; never duplicate it.
 - `renderer/` fetches raylib 5.5 with CMake FetchContent. Shaders are written once with macros for GLSL 330 and GLSL ES 100.
 
