@@ -33,7 +33,7 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 - `length`: big-endian, cuenta `type` + `payload` (mínimo 1).
 - `type`: valor de `MessageType` (sección 5).
 - `payload`: un mapa msgpack. Las claves desconocidas se ignoran.
-- Tope de trama: 16 MiB. Se rechaza antes de reservar memoria. Los trabajos y resultados grandes se parten en varias tramas (`part` / `parts`) y los modelos en chunks de 1 MiB.
+- Tope de trama: 4 MiB. Se rechaza antes de reservar memoria. Los emisores deben apuntar a ≤ 1 MiB por trama: los trabajos y resultados grandes se parten en varias tramas (`part` / `parts`, como mínimo una vista o un bloque por trama) y los modelos en chunks de 1 MiB. Así un envío largo no retiene el canal más que un instante y los `HEARTBEAT` se intercalan entre tramas.
 - Se cierra la conexión ante: longitud 0 o sobre el tope, tipo desconocido, msgpack inválido o payload que no es un mapa, campo faltante o de tipo incorrecto.
 
 ## 4. Conexión
@@ -42,7 +42,7 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 2. El hub valida: versión igual a `PROTOCOL_VERSION`, `node` igual al SAN del certificado, `role` distinto de `coordinator` y permitido para ese nodo. Si es válido responde `HELLO {protocolVersion, node = hub.node, role = "coordinator"}`; si no, cierra sin responder y lo registra.
 3. El nodo valida la respuesta (nombre del hub y rol `coordinator`).
 4. Desde ahí cada lado envía `HEARTBEAT {sequence, sentAtNs, echo = false}` cada `heartbeat-interval-s`. El receptor responde el mismo mensaje con `echo = true`; quien lo originó calcula el RTT con su propio reloj monotónico (`sentAtNs` solo tiene sentido para quien lo envió).
-5. Si no llega ninguna trama en `heartbeat-timeout-s`, se cierra la conexión. El hub lo notifica y, en M4, el trabajo de ese worker se reasigna.
+5. Si no llega ningún byte en `heartbeat-timeout-s` (se cuenta cada fragmento recibido, no solo las tramas completas, para no confundir una trama grande en un enlace lento con un nodo caído), se cierra la conexión. El hub lo notifica y, en M4, el trabajo de ese worker se reasigna.
 
 `HELLO` fuera del inicio, o cualquier mensaje que viole la tabla de la sección 6, cierra la conexión.
 
@@ -135,14 +135,14 @@ Esto es lo único de M2 que falta ejecutar: la lógica ya se verifica en loopbac
 # host
 uv run astrea-net-check serve --expect worker-b pi:device-agent pi:worker --duration 120
 
-# worker B
+# worker B (sin --duration: corre hasta que el hub cierre el enlace; se pueden lanzar en cualquier orden y con minutos de diferencia)
 uv run astrea-net-check connect --name worker-b
 
 # Pi, forzando ChaCha20-Poly1305 (un proceso por rol)
 OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-net-check connect --name pi --role device-agent
 OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-net-check connect --name pi --role worker
 ```
-Resultado esperado: el host imprime `TLSv1.3` y un RTT por cada nodo, y termina con `all expected nodes are connected and exchanging heartbeats` (código 0). Cada nodo termina con `link ok`.
+Resultado esperado: el host imprime `TLSv1.3` y un RTT por cada nodo, y termina con `all expected nodes are connected and exchanging heartbeats` (código 0). Tras 5 s (`--linger`) el hub cierra los enlaces y cada nodo termina con `link ok` (código 0): vale que haya medido al menos un eco de `HEARTBEAT` y que el cierre lo haya hecho el hub. Si algún nodo falta, el hub termina con código 1 a los `--duration` segundos y lista los que faltan. Los nodos esperan al hub hasta 60 s (`--connect-timeout`).
 
 **Rechazos** (desde cualquier máquina de la red, con `<IP>` del host):
 ```

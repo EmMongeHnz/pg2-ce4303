@@ -136,7 +136,7 @@ Todo el tráfico entre los 3 nodos va por TCP con TLS 1.3 y autenticación mutua
 
 - M2.1: `pki/make-certs.sh` genera una CA ECDSA P-256 y un certificado por nodo (nombre en el SAN DNS, `--ip` opcional); `pki/openssl-chacha20.cnf` deja un proceso solo con ChaCha20-Poly1305 (Python no permite elegir suites TLS 1.3, se activa con `OPENSSL_CONF`).
 - M2.2: `astrea_common.tls`: TLS 1.3 fijo, mTLS obligatorio, confianza solo en la CA propia, el cliente verifica el nombre del hub y el hub lee el nombre del cliente desde el SAN.
-- M2.3: `astrea_common.framing`: `length` cuenta `type` + payload, tope de 16 MiB, decodificador incremental probado con cortes en cualquier posición y flujos corruptos.
+- M2.3: `astrea_common.framing`: `length` cuenta `type` + payload, tope de 4 MiB (los emisores apuntan a ≤ 1 MiB por trama), decodificador incremental probado con cortes en cualquier posición y flujos corruptos.
 - M2.4: `astrea_common.messages`: validación de campos, reglas de quién envía qué por rol, `MODEL_PUSH` en chunks con SHA-256 y bloques de arrays con zstd acotado. `JOB_ASSIGN` y `JOB_RESULT` ya traen sus campos definidos para M4. `ROTATE` / `ROTATE_DONE` existen pero el hub los rechaza.
 - M2.5: `config.toml` en la raíz (nodos, roles, rutas TLS con `{node}`, parámetros de heartbeat), validado por `astrea_common.config`.
 - M2.6: topología hub-and-spoke (el host escucha, worker B y la Pi se conectan) en `astrea_common.link`; `astrea-net-check serve|connect` verifica los enlaces. Validado en loopback con 3 nodos y certificados distintos; falta correrlo en la laptop B y en la Pi (pasos en `docs/protocol.md`, sección 10).
