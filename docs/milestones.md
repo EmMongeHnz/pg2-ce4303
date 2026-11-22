@@ -125,19 +125,20 @@ Entregables: `common/` (protocolo, TLS, config), `pki/`, pruebas de protocolo, e
 **Objetivo:** de vistas RGB-D con pose a un GLB limpio con dos LOD, primero en datos sintéticos y luego en capturas reales.
 
 Tareas:
-- [ ] `capture-service`: ingesta Record3D (o `.r3d`), tracking ArUco, keyframe cada ≥10° con pose estable ~0.5 s, promedio de 3–5 frames de profundidad.
-- [ ] Prueba sintética: renderizar profundidad de una malla conocida (p. ej. Stanford bunny) desde poses conocidas.
-- [ ] TSDF propia en NumPy: cubo de 25 cm a 192³, canales `tsdf`, `weight`, `color`.
-- [ ] Preprocesado por vista: recorte por profundidad (20–50 cm), plano del plato por RANSAC, recorte cilíndrico, outliers.
-- [ ] Post-proceso: marching cubes, componente conexa mayor, limpieza de duplicados y degenerados, Taubin leve, decimación cuádrica (LOD-high ≈ 30k, LOD-low ≈ 8k), color por vértice.
-- [ ] Exportación GLB y compresión zstd.
-- [ ] Medición de Chamfer contra la malla original.
+- [x] `capture-service`: ingesta Record3D (o `.r3d`), tracking ArUco, keyframe cada ≥10° con pose estable ~0.5 s, promedio de 3–5 frames de profundidad. _`astrea-capture` (`capture_service.capture`, `keyframe_selector`, `depth_averager`, `keyframe_recorder`, `coverage`) guarda cada keyframe como `ViewPackage` en `out/scans/<nombre>/`. Probado con poses sintéticas; falta validarlo con el iPhone y el plato (`docs/m3/real-capture-guide.md`)._
+- [x] Prueba sintética: renderizar profundidad de una malla conocida (p. ej. Stanford bunny) desde poses conocidas. _`tests/spikes/m3-synthetic/` y `capture_service.synthetic_depth`; ver `docs/m3/synthetic-test.md`._
+- [x] TSDF propia en NumPy: cubo de 25 cm a 192³, canales `tsdf`, `weight`, `color`. _`astrea_common.tsdf`, integración por franjas, peso sin tope y `MergeVolumes` exacto (listo para M4)._
+- [x] Preprocesado por vista: recorte por profundidad (20–50 cm), plano del plato por RANSAC, recorte cilíndrico, outliers. _`astrea_common.view_preprocess`: rango de profundidad, recorte en el marco del plato con la pose ArUco (en lugar de RANSAC: el plano ya es conocido y el paso es determinista), píxeles sin soporte y componentes pequeñas. Solo usa datos de una vista, así que repartir vistas entre workers no cambia el resultado (`tests/unit/test_distributed_equivalence.py`). Los parámetros por defecto no están ajustados con capturas reales._
+- [x] Post-proceso: marching cubes, componente conexa mayor, limpieza de duplicados y degenerados, Taubin leve, decimación cuádrica (LOD-high ≈ 30k, LOD-low ≈ 8k), color por vértice. _`coordinator.meshing` y `coordinator.postprocess`. En el bunny sintético los dos LOD salen con una sola componente y el mismo error de exactitud que la malla sin decimar. El color por vértice se prueba con un volumen sintético; falta verlo con RGB real._
+- [x] Exportación GLB y compresión zstd. _`Lod.ToGlb` / `ToCompressedGlb` y `astrea_common.compression`. Bunny sintético: LOD-high 594 KiB (485 KiB con zstd), LOD-low 160 KiB (131 KiB). Falta comprobar que el renderer carga el GLB generado._
+- [x] Fidelidad máxima por software (sin límite de tiempo): muestreo bilineal de profundidad y color, pesos por vista (ángulo de incidencia y profundidad), color en float, rejilla ajustada al objeto con vóxel de 0.65 mm, `lod-full.glb` sin tope de triángulos (high/low conservan 30k/8k para la Pi), promedio de todos los frames y poses de la ventana estable, y refinamiento opcional de pose (`--refine-poses turntable|azimuth|icp`). _Medido solo con datos sintéticos (`docs/m3/synthetic-test.md`); el ruido real de la TrueDepth no está medido. El renderer gana `--up-axis z` y `--rotate-z` para ver estos GLB._
+- [x] Medición de Chamfer contra la malla original. _`coordinator.mesh_metrics`: exactitud y completitud por separado._
 
 Entregables: `host/capture-service/`, núcleo de fusión reutilizable por `worker/`, post-proceso en `host/coordinator/`, prueba sintética en `tests/`.
 
 **Gate M3:**
 - Error de ángulo ArUco < 1° contra posiciones marcadas en el plato.
-- Chamfer de la prueba sintética bajo el umbral (fijar el umbral al iniciar M3).
+- Chamfer de la prueba sintética bajo el umbral (fijar el umbral al iniciar M3). _Umbral fijado: exactitud (reconstrucción → original) con media ≤ 2 vóxeles y p95 ≤ 4 vóxeles, en la corrida sin ruido; la completitud solo se reporta, sobre las caras visibles. Resultado: media 0.16 vóxeles y p95 0.38 vóxeles, cumplido (`docs/m3/synthetic-test.md`)._
 - Las mallas reales respetan el presupuesto de triángulos y tienen una sola componente.
 
 ---

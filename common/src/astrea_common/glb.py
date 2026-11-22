@@ -23,6 +23,7 @@ UNSIGNED_BYTE = 5121
 UNSIGNED_SHORT = 5123
 UNSIGNED_INT = 5125
 TRIANGLES = 4
+MAX_PRIMITIVE_VERTICES = 65535
 
 
 def VertexNormals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -39,86 +40,93 @@ def _Pad(data: bytes, fill: bytes) -> bytes:
     return data + fill * (-len(data) % 4)
 
 
+def SplitFaces(faces: np.ndarray, maxVertices: int):
+    """Yield consecutive runs of faces that each touch at most `maxVertices` distinct vertices."""
+    if len(faces) <= 1 or len(np.unique(faces)) <= maxVertices:
+        yield faces
+        return
+    half = len(faces) // 2
+    yield from SplitFaces(faces[:half], maxVertices)
+    yield from SplitFaces(faces[half:], maxVertices)
+
+
+class _GlbBuilder:
+    def __init__(self) -> None:
+        self.binary = b""
+        self.bufferViews: list[dict] = []
+        self.accessors: list[dict] = []
+
+    def AddAccessor(self, data: np.ndarray, componentType: int, kind: str, target: int, **extra) -> int:
+        blob = np.ascontiguousarray(data).tobytes()
+        self.bufferViews.append({"buffer": 0, "byteOffset": len(self.binary), "byteLength": len(blob), "target": target})
+        self.binary = _Pad(self.binary + blob, b"\x00")
+        count = data.shape[0] if data.ndim > 1 else data.size
+        self.accessors.append({"bufferView": len(self.bufferViews) - 1, "componentType": componentType, "count": count, "type": kind, **extra})
+        return len(self.accessors) - 1
+
+    def AddPrimitive(self, vertices: np.ndarray, normals: np.ndarray, colors: np.ndarray | None, indices: np.ndarray) -> dict:
+        attributes = {
+            "POSITION": self.AddAccessor(vertices, FLOAT, "VEC3", ARRAY_BUFFER, min=vertices.min(axis=0).tolist(), max=vertices.max(axis=0).tolist()),
+            "NORMAL": self.AddAccessor(normals, FLOAT, "VEC3", ARRAY_BUFFER),
+        }
+        if colors is not None:
+            attributes["COLOR_0"] = self.AddAccessor(colors, UNSIGNED_BYTE, "VEC4", ARRAY_BUFFER, normalized=True)
+        indexType, indexDtype = (UNSIGNED_SHORT, np.uint16) if len(vertices) <= MAX_PRIMITIVE_VERTICES else (UNSIGNED_INT, np.uint32)
+        index = self.AddAccessor(indices.reshape(-1).astype(indexDtype), indexType, "SCALAR", ELEMENT_ARRAY_BUFFER)
+        return {"attributes": attributes, "indices": index, "mode": TRIANGLES}
+
+
 def EncodeGlb(
     vertices: np.ndarray,
     faces: np.ndarray,
     colors: np.ndarray | None = None,
     normals: np.ndarray | None = None,
 ) -> bytes:
-    """Encode a mesh. `colors` is Nx3 or Nx4 uint8; normals are computed when omitted."""
-    vertices = np.ascontiguousarray(vertices, dtype=np.float32)
-    if normals is None:
-        normals = VertexNormals(vertices.astype(np.float64), np.asarray(faces)).astype(np.float32)
-    normals = np.ascontiguousarray(normals, dtype=np.float32)
-    indexType, indexDtype = (UNSIGNED_SHORT, np.uint16) if len(vertices) <= 0xFFFF else (UNSIGNED_INT, np.uint32)
-    indices = np.ascontiguousarray(np.asarray(faces).reshape(-1), dtype=indexDtype)
+    """Encode a mesh. `colors` is Nx3 or Nx4 uint8; normals are computed when omitted.
 
-    blobs = [vertices.tobytes(), normals.tobytes()]
-    accessors = [
-        {
-            "bufferView": 0,
-            "componentType": FLOAT,
-            "count": len(vertices),
-            "type": "VEC3",
-            "min": vertices.min(axis=0).tolist(),
-            "max": vertices.max(axis=0).tolist(),
-        },
-        {"bufferView": 1, "componentType": FLOAT, "count": len(vertices), "type": "VEC3"},
-    ]
-    attributes = {"POSITION": 0, "NORMAL": 1}
+    raylib stores mesh indices as 16-bit and silently truncates 32-bit ones, so a mesh with more than
+    65535 vertices is written as several primitives of at most that many vertices each. Normals are
+    computed on the whole mesh first, so shading stays smooth across the cuts.
+    """
+    vertices = np.ascontiguousarray(vertices, dtype=np.float32)
+    faces = np.asarray(faces)
+    if normals is None:
+        normals = VertexNormals(vertices.astype(np.float64), faces).astype(np.float32)
+    normals = np.ascontiguousarray(normals, dtype=np.float32)
+    rgba = None
     if colors is not None:
         rgba = np.asarray(colors, dtype=np.uint8)
         if rgba.shape[1] == 3:
             rgba = np.concatenate([rgba, np.full((len(rgba), 1), 255, np.uint8)], axis=1)
-        blobs.append(np.ascontiguousarray(rgba).tobytes())
-        accessors.append(
-            {
-                "bufferView": 2,
-                "componentType": UNSIGNED_BYTE,
-                "normalized": True,
-                "count": len(rgba),
-                "type": "VEC4",
-            }
-        )
-        attributes["COLOR_0"] = 2
-    blobs.append(indices.tobytes())
-    accessors.append(
-        {"bufferView": len(blobs) - 1, "componentType": indexType, "count": len(indices), "type": "SCALAR"}
-    )
 
-    binary = b""
-    bufferViews = []
-    for i, blob in enumerate(blobs):
-        isIndexBlob = i == len(blobs) - 1
-        bufferViews.append(
-            {
-                "buffer": 0,
-                "byteOffset": len(binary),
-                "byteLength": len(blob),
-                "target": ELEMENT_ARRAY_BUFFER if isIndexBlob else ARRAY_BUFFER,
-            }
-        )
-        binary = _Pad(binary + blob, b"\x00")
+    builder = _GlbBuilder()
+    if len(vertices) <= MAX_PRIMITIVE_VERTICES:
+        primitives = [builder.AddPrimitive(vertices, normals, rgba, faces)]
+    else:
+        primitives = []
+        for part in SplitFaces(faces, MAX_PRIMITIVE_VERTICES):
+            used = np.unique(part)
+            primitives.append(builder.AddPrimitive(vertices[used], normals[used], None if rgba is None else rgba[used], np.searchsorted(used, part)))
 
     document = {
         "asset": {"version": "2.0", "generator": "astrea-view"},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0}],
-        "meshes": [{"primitives": [{"attributes": attributes, "indices": len(accessors) - 1, "mode": TRIANGLES}]}],
-        "accessors": accessors,
-        "bufferViews": bufferViews,
-        "buffers": [{"byteLength": len(binary)}],
+        "meshes": [{"primitives": primitives}],
+        "accessors": builder.accessors,
+        "bufferViews": builder.bufferViews,
+        "buffers": [{"byteLength": len(builder.binary)}],
     }
     jsonChunk = _Pad(json.dumps(document, separators=(",", ":")).encode(), b" ")
-    totalLength = 12 + 8 + len(jsonChunk) + 8 + len(binary)
+    totalLength = 12 + 8 + len(jsonChunk) + 8 + len(builder.binary)
     return b"".join(
         [
             struct.pack("<III", GLB_MAGIC, GLB_VERSION, totalLength),
             struct.pack("<II", len(jsonChunk), CHUNK_JSON),
             jsonChunk,
-            struct.pack("<II", len(binary), CHUNK_BIN),
-            binary,
+            struct.pack("<II", len(builder.binary), CHUNK_BIN),
+            builder.binary,
         ]
     )
 

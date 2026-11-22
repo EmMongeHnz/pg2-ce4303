@@ -34,6 +34,10 @@ class RingOverlay:
 
     def Render(self, frame: RgbdFrame) -> RgbAnnotation:
         """Return `frame` with the ring drawn on it, plus the status text to show upright."""
+        return self.Track(frame)[1]
+
+    def Track(self, frame: RgbdFrame) -> tuple[RingPose | None, RgbAnnotation]:
+        """Estimate the ring pose once and return it with the annotated frame, for callers that need both."""
         if self._estimator is None:
             self._estimator = RingPoseEstimator(self.layout, frame.rgbIntrinsics.Matrix())
         bgr = frame.Bgr()
@@ -43,9 +47,9 @@ class RingOverlay:
         for corners in detections.values():
             cv2.polylines(bgr, [np.round(corners).astype(np.int32)], True, GREEN if pose else RED, 2)
         if pose is None:
-            return RgbAnnotation(bgr, self._NoPoseLines(len(detections)), RED)
+            return None, RgbAnnotation(bgr, self._NoPoseLines(len(detections)), RED)
         self._DrawAxes(bgr, pose)
-        return RgbAnnotation(bgr, self._PoseLines(frame, pose), GREEN)
+        return pose, RgbAnnotation(bgr, self._PoseLines(frame, pose), GREEN)
 
     def _DrawAxes(self, bgr: np.ndarray, pose: RingPose) -> None:
         rvec, _ = cv2.Rodrigues(pose.rotation)

@@ -16,16 +16,20 @@ Pending inputs: delivery date and team size.
 ## Commands
 
 ```
-uv sync                                   # Python deps (add --extra record3d for USB streaming)
+uv sync --extra record3d --extra reconstruction
+                                          # Python deps; always pass the extras you use, a plain `uv sync` removes them
 uv run pytest                             # unit tests (tests/unit)
 uv run astrea-stream-viewer               # live RGB + depth view of the Record3D USB stream (q or Ctrl+C to quit; --ring adds the ArUco pose overlay)
+uv run astrea-capture --name <scan>        # scan capture: ArUco pose, keyframe every ~10°, session in out/scans/<scan>/ (--r3d replays an export)
+uv run astrea-reconstruct out/scans/<scan> # preprocess + TSDF + meshing + LODs; writes model/lod-{full,high,low}.glb and report.json (--refine-poses turntable|azimuth|icp, --voxel-mm)
 cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build renderer/build -j
+                                          # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
 dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 ```
 
-Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`.
+Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`. The M3 synthetic test is `tests/spikes/m3-synthetic/` (`fetch-bunny.py` once, then `run-bunny-test.py`); the bunny is downloaded to `out/datasets/` and never versioned, and must be credited to the Stanford Computer Graphics Laboratory.
 
 Generated files are not versioned (see `.gitignore`): `out/`, build directories, `renderer/models/*.glb` (regenerate with `tests/spikes/0c-renderer/make-test-glb.py`), `*.r3d`, `.vscode/settings.json` and private keys under `pki/`. Example certificates for the delivery are the only exception and are added explicitly (see M2 in `docs/milestones.md`).
 
@@ -36,6 +40,7 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 ## Code layout
 
 - Python is a single uv project (`pyproject.toml` at the root). Each component keeps its package under `<component>/src/<package>/` and is mapped in `[tool.setuptools.package-dir]`: `astrea_common`, `capture_service`, `coordinator`, `worker`, `device_agent`.
+- The TSDF core (`astrea_common.tsdf`, NumPy only) is shared by the workers and the coordinator and works in millimetres in the plate frame; meshing, post-processing (Taubin, quadric decimation with `fast-simplification`, vertex colour, GLB + zstd) and metrics (`scikit-image`, `scipy`, extra `reconstruction`) live in `coordinator`; zstd helpers for network payloads are in `astrea_common.compression`. Integration uses per-observation weights (incidence angle and depth, computed per view) with no cap, and colour is a float32 weighted mean, so partial volumes still merge exactly.
 - The ArUco ring geometry (`astrea_common.aruco_ring.RingLayout`) is shared by the generator and the pose estimator; never duplicate it.
 - `renderer/` fetches raylib 5.5 with CMake FetchContent. Shaders are written once with macros for GLSL 330 and GLSL ES 100.
 

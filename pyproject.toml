@@ -14,12 +14,20 @@ dependencies = [
 
 [project.optional-dependencies]
 record3d = ["record3d>=1.4"]
+reconstruction = [
+    "fast-simplification>=0.1.7",
+    "scikit-image>=0.22",
+    "scipy>=1.11",
+    "zstandard>=0.22",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
 
 [project.scripts]
 astrea-stream-viewer = "capture_service.stream_viewer:Main"
+astrea-capture = "capture_service.capture:Main"
+astrea-reconstruct = "coordinator.reconstruct:Main"
 astrea-coordinator = "coordinator.__main__:Main"
 astrea-worker = "worker.__main__:Main"
 astrea-device-agent = "device_agent.__main__:Main"
