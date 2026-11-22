@@ -4,12 +4,9 @@ Escaneo 3D distribuido con visualización holográfica (Proyecto Grupal 2, Princ
 
 Un iPhone con TrueDepth captura el objeto con Record3D sobre una base giratoria con un anillo ArUco; la reconstrucción TSDF se reparte entre tres nodos conectados con mTLS; el modelo se ve en la PC y en un display Pepper's Ghost controlado por una Raspberry Pi 3 con un driver de kernel propio.
 
-- Diseño: [`implementation-plan.md`](implementation-plan.md)
-- Hitos: [`docs/milestones.md`](docs/milestones.md)
+- Diseño: [`plan/implementation-plan.md`](plan/implementation-plan.md)
+- Milestones y acciones: [`plan/milestones-and-actions.md`](plan/milestones-and-actions.md)
 - Enunciado: [`especificacion.md`](especificacion.md)
-- Diagrama de bloques: [`docs/block-diagram.dot`](docs/block-diagram.dot)
-- Estado de M0 y pasos con hardware: [`docs/m0/spike-report.md`](docs/m0/spike-report.md)
-- Guía rápida de prueba manual: [`docs/m0/manual-test-guide.md`](docs/m0/manual-test-guide.md)
 
 ## Estructura
 
@@ -26,7 +23,8 @@ Un iPhone con TrueDepth captura el objeto con Record3D sobre una base giratoria 
 | `hardware/` | Generador del anillo ArUco | M0 |
 | `tests/unit/` | Pruebas de `pytest` | — |
 | `tests/spikes/` | Scripts de los spikes de M0 | M0 |
-| `docs/` | Planificación, diagramas, informe IEEE | — |
+| `plan/` | Plan de implementación y milestones | — |
+| `docs/` | Solo lo que se pida explícitamente; no se versiona por defecto | — |
 
 ## Compilar y probar
 
@@ -61,4 +59,4 @@ uv run tests/spikes/0a-record3d/make-synthetic-r3d.py out/synthetic.r3d         
 uv run tests/spikes/0b-ring-pose/track-ring.py --r3d out/synthetic.r3d           # tracking sobre RGB-D
 ```
 
-Los pasos con el iPhone, la Pi y la maqueta están en [`docs/m0/spike-report.md`](docs/m0/spike-report.md).
+Los pasos con el iPhone, la Pi y la maqueta están en `docs/m0/spike-report.md` (local, no versionado).
