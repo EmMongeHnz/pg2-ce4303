@@ -26,6 +26,7 @@ Module.symvers
 
 out/
 hardware/aruco-ring/out/
+docs/
 renderer/models/*.glb
 *.r3d
 

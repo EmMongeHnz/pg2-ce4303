@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-AstreaView has finished the software side of **M0** (viability spikes and repo skeleton). Spikes 0a (Record3D over USB) and 0b (ArUco ring pose) passed on real hardware. The remaining hardware-bound checks (raylib DRM fps on the Pi 3, reflection test, skeleton build on worker B and the Pi) are pending; their steps and results live in `docs/m0/spike-report.md`.
+AstreaView has finished the software side of **M0** (viability spikes and repo skeleton). Spikes 0a (Record3D over USB) and 0b (ArUco ring pose) passed on real hardware. The remaining hardware-bound checks (raylib DRM fps on the Pi 3, reflection test, skeleton build on worker B and the Pi) are pending; their steps and results live in `docs/m0/spike-report.md` (local only, `docs/` is not versioned).
 
 - `especificacion.md`: the course assignment (Principios de SO, Proyecto Grupal 2). It defines the four required areas: a custom kernel driver (GPIO preferred), hardware with movement or interesting processing, distributed processing on ≥3 nodes (no shared directories), and encryption of all network traffic. It also defines the IEEE-Trans documentation sections and the required diagrams (architecture, components, sequence, features).
-- `implementation-plan.md`: the approved design and the source of truth for architecture, planned repo layout, protocol, phases and acceptance criteria. Read it before proposing or writing code.
-- `docs/milestones.md`: milestones M0–M8 with their gates.
-- `docs/block-diagram.dot` → `docs/block-diagram.pdf`: system block diagram.
+- `plan/implementation-plan.md`: the approved design and the source of truth for architecture, planned repo layout, protocol, phases and acceptance criteria. Read it before proposing or writing code.
+- `plan/milestones-and-actions.md`: milestones M0–M8 with their tasks (`Mn.k`), dependencies and acceptance criteria. `plan/` holds only these two files.
+- `docs/`: only what the user explicitly asks for (reports, guides, diagrams such as `docs/block-diagram.dot` → `docs/block-diagram.pdf`). It is git-ignored: never create, edit or track anything there unless asked, and add files to the repo only on demand (`git add -f`).
 
 Pending inputs: delivery date and team size.
 
@@ -31,11 +31,11 @@ dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 
 Spike scripts live in `tests/spikes/<spike>/` and are run with `uv run <script> --help`. The M3 synthetic test is `tests/spikes/m3-synthetic/` (`fetch-bunny.py` once, then `run-bunny-test.py`); the bunny is downloaded to `out/datasets/` and never versioned, and must be credited to the Stanford Computer Graphics Laboratory.
 
-Generated files are not versioned (see `.gitignore`): `out/`, build directories, `renderer/models/*.glb` (regenerate with `tests/spikes/0c-renderer/make-test-glb.py`), `*.r3d`, `.vscode/settings.json` and private keys under `pki/`. Example certificates for the delivery are the only exception and are added explicitly (see M2 in `docs/milestones.md`).
+Generated files are not versioned (see `.gitignore`): `out/`, build directories, `renderer/models/*.glb` (regenerate with `tests/spikes/0c-renderer/make-test-glb.py`), `*.r3d`, `.vscode/settings.json` and private keys under `pki/`. Example certificates for the delivery are the only exception and are added explicitly (see M2.8 in `plan/milestones-and-actions.md`).
 
-Keep `docs/milestones.md` current: when a task or gate is completed or partially advanced, tick its checkbox or annotate its status in the same change that advances it. Do not tick a gate that still depends on pending hardware checks.
+Keep `plan/milestones-and-actions.md` current: when a task or acceptance criterion is completed or partially advanced, tick its checkbox or annotate its status in the same change that advances it. Do not tick a criterion that still depends on pending hardware checks.
 
-Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags are defined in the diagram legend and must stay consistent with the protocol messages in `implementation-plan.md`.
+Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags are defined in the diagram legend and must stay consistent with the protocol messages in `plan/implementation-plan.md`.
 
 ## Code layout
 
