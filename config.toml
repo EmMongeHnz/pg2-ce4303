@@ -1,0 +1,30 @@
+# Static cluster configuration, identical on every machine. See common/src/astrea_common/config.py.
+# Loopback defaults with the example certificates; for the real setup set hub.address to the host PC's LAN
+# address, hub.bind-address to "0.0.0.0" and use certificates generated with pki/make-certs.sh.
+
+[hub]
+node = "host"
+address = "127.0.0.1"
+bind-address = "127.0.0.1"
+port = 7400
+
+[tls]
+ca-file = "pki/example/ca.crt"
+cert-file = "pki/example/{node}.crt"
+key-file = "pki/example/{node}.key"
+
+[network]
+heartbeat-interval-s = 2.0
+heartbeat-timeout-s = 6.0
+connect-timeout-s = 5.0
+reconnect-initial-s = 0.5
+reconnect-max-s = 5.0
+
+[nodes.host]
+roles = ["coordinator", "worker"]
+
+[nodes.worker-b]
+roles = ["worker"]
+
+[nodes.pi]
+roles = ["worker", "device-agent"]
