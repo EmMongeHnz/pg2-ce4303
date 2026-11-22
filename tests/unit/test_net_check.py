@@ -45,3 +45,30 @@ def test_node_reports_failure_when_the_hub_is_unreachable(pki):
         return await Connect(config, "pi", Role.WORKER, duration=1.0, connectTimeout=0.6)
 
     assert asyncio.run(scenario()) == 1
+
+
+def test_node_without_duration_runs_until_the_hub_closes_and_still_reports_ok(pki):
+    from test_secure_link import RunningHub, WaitUntil
+
+    async def scenario():
+        config = MakeConfig(pki, FreePort())
+        async with RunningHub(config) as hub:
+            check = asyncio.create_task(Connect(config, "worker-b", Role.WORKER, duration=None, connectTimeout=10.0))
+            await WaitUntil(lambda: ("worker-b", Role.WORKER) in hub.peers and hub.peers[("worker-b", Role.WORKER)].rttMs is not None)
+            await asyncio.sleep(1.2)
+        return await asyncio.wait_for(check, 10)
+
+    assert asyncio.run(scenario()) == 0
+
+
+def test_node_starting_long_after_the_others_still_passes(pki):
+    async def scenario():
+        config = MakeConfig(pki, FreePort())
+        expected = {("worker-b", Role.WORKER), ("pi", Role.DEVICE_AGENT)}
+        serve = asyncio.create_task(Serve(config, expected, duration=30.0, linger=3.0))
+        early = asyncio.create_task(Connect(config, "worker-b", Role.WORKER, duration=None, connectTimeout=10.0))
+        await asyncio.sleep(2.5)
+        late = asyncio.create_task(Connect(config, "pi", Role.DEVICE_AGENT, duration=None, connectTimeout=10.0))
+        return await asyncio.gather(serve, early, late)
+
+    assert asyncio.run(scenario()) == [0, 0, 0]

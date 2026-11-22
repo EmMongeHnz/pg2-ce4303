@@ -1,12 +1,12 @@
 """Link check for the secure network: `astrea-net-check serve` on the host, `connect` on the other nodes.
 
   astrea-net-check serve --config config.toml --expect worker-b pi:device-agent --duration 60
-  astrea-net-check connect --config config.toml --name worker-b --duration 10
+  astrea-net-check connect --config config.toml --name worker-b
 
 `serve` runs the hub, prints every peer with its negotiated TLS session and heartbeat round-trip time, and
 with `--expect` exits 0 once every listed NODE[:ROLE] (role defaults to worker) is connected and measured.
-`connect` dials the hub as one node, exchanges heartbeats for `--duration` seconds and exits 0 if the link
-stayed up. Launch a node with `OPENSSL_CONF=pki/openssl-chacha20.cnf` to force ChaCha20-Poly1305.
+`connect` dials the hub as one node and exchanges heartbeats until the hub closes the link (or for
+`--duration` seconds); it exits 0 if at least one heartbeat was echoed and the link only ended cleanly. Launch a node with `OPENSSL_CONF=pki/openssl-chacha20.cnf` to force ChaCha20-Poly1305.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from astrea_common.messages import Role
 
 REPORT_PERIOD_S = 1.0
 DEFAULT_CONFIG = "config.toml"
-DEFAULT_CONNECT_TIMEOUT_S = 15.0
+DEFAULT_CONNECT_TIMEOUT_S = 60.0
+HUB_CLOSED_REASON = "peer closed the connection"
 DEFAULT_LINGER_S = 5.0
 
 
@@ -74,7 +75,13 @@ async def Serve(config: ClusterConfig, expected: set[tuple[str, Role]], duration
     return 0
 
 
-async def Connect(config: ClusterConfig, nodeName: str, role: Role, duration: float, connectTimeout: float) -> int:
+def LinkIsHealthy(connection: Connection, heartbeatMeasured: bool) -> bool:
+    """A link is fine if heartbeats were echoed and it is still up or the hub closed it cleanly afterwards."""
+    return heartbeatMeasured and (connection.isOpen or connection.closeReason == HUB_CLOSED_REASON)
+
+
+async def Connect(config: ClusterConfig, nodeName: str, role: Role, duration: float | None, connectTimeout: float) -> int:
+    """`duration` None keeps the check running until the hub closes the link."""
     client = NodeClient(config, nodeName, role)
     runner = asyncio.create_task(client.Run())
     try:
@@ -84,11 +91,13 @@ async def Connect(config: ClusterConfig, nodeName: str, role: Role, duration: fl
             Report(f"could not connect to the hub at {config.hub.address}:{config.hub.port} within {connectTimeout:.0f} s")
             return 1
         Report(f"connected to {connection.peer.node} over {connection.peer.session}")
-        deadline = time.monotonic() + duration
-        while time.monotonic() < deadline and connection.isOpen:
+        deadline = None if duration is None else time.monotonic() + duration
+        heartbeatMeasured = False
+        while connection.isOpen and (deadline is None or time.monotonic() < deadline):
             await asyncio.sleep(REPORT_PERIOD_S)
+            heartbeatMeasured = heartbeatMeasured or connection.rttMs is not None
             Report(f"heartbeat rtt: {connection.rttMs:.2f} ms" if connection.rttMs is not None else "waiting for the first heartbeat echo")
-        healthy = connection.isOpen and connection.rttMs is not None
+        healthy = LinkIsHealthy(connection, heartbeatMeasured)
         Report("link ok" if healthy else f"link failed: {connection.closeReason or 'no heartbeat echo received'}")
         return 0 if healthy else 1
     finally:
@@ -108,7 +117,7 @@ def BuildParser() -> argparse.ArgumentParser:
     connect = commands.add_parser("connect", help="dial the hub as a node")
     connect.add_argument("--name", required=True, help="node name from config.toml")
     connect.add_argument("--role", default=Role.WORKER.value, choices=[role.value for role in Role if role is not Role.COORDINATOR])
-    connect.add_argument("--duration", type=float, default=10.0, help="seconds to exchange heartbeats (default 10)")
+    connect.add_argument("--duration", type=float, default=None, help="seconds to exchange heartbeats (default: until the hub closes the link)")
     connect.add_argument("--connect-timeout", type=float, default=DEFAULT_CONNECT_TIMEOUT_S)
     return parser
 
