@@ -424,3 +424,22 @@ def test_everything_on_the_wire_is_tls_and_hides_the_protocol(pki):
         assert 0x17 in ParseTlsRecords(stream)
         for secret in (b"worker-b", b"protocolVersion", b"sentAtNs", b"HELLO", b"coordinator"):
             assert secret not in stream
+
+
+def test_shipped_config_and_example_certificates_work_together():
+    from dataclasses import replace
+
+    from astrea_common.config import LoadConfig
+
+    repoRoot = Path(__file__).resolve().parents[2]
+    shipped = LoadConfig(repoRoot / "config.toml")
+    config = replace(shipped, hub=replace(shipped.hub, port=FreePort()))
+
+    async def scenario():
+        async with RunningHub(config) as hub:
+            async with RunningNode(config, "worker-b", Role.WORKER) as node:
+                connection = await node.WaitConnected(WAIT_S)
+                await WaitUntil(lambda: ("worker-b", Role.WORKER) in hub.peers)
+                return connection.peer.session
+
+    assert asyncio.run(scenario()).startswith("TLSv1.3")
