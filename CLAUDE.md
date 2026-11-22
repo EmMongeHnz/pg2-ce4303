@@ -11,8 +11,6 @@ AstreaView has finished the software side of **M0** (viability spikes and repo s
 - `plan/milestones-and-actions.md`: milestones M0–M8 with their tasks (`Mn.k`), dependencies and acceptance criteria. `plan/` holds only these two files.
 - `docs/`: only what the user explicitly asks for (reports, guides, diagrams such as `docs/block-diagram.dot` → `docs/block-diagram.pdf`). It is git-ignored: never create, edit or track anything there unless asked, and add files to the repo only on demand (`git add -f`).
 
-Pending inputs: delivery date and team size.
-
 ## Commands
 
 ```
