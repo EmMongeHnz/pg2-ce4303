@@ -176,7 +176,7 @@ def test_write_frame_and_read_frame_agree_over_a_socket():
         port = server.sockets[0].getsockname()[1]
         _, writer = await asyncio.open_connection("127.0.0.1", port)
         await WriteFrame(writer, 4, SAMPLE)
-        result = await received
+        result = await asyncio.wait_for(received, 5)
         writer.close()
         server.close()
         await server.wait_closed()

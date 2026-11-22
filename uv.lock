@@ -17,6 +17,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pyliblzfse" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -25,7 +26,6 @@ reconstruction = [
     { name = "scikit-image" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "zstandard" },
 ]
 record3d = [
     { name = "record3d" },
@@ -47,7 +47,7 @@ requires-dist = [
     { name = "record3d", marker = "extra == 'record3d'", specifier = ">=1.4" },
     { name = "scikit-image", marker = "extra == 'reconstruction'", specifier = ">=0.22" },
     { name = "scipy", marker = "extra == 'reconstruction'", specifier = ">=1.11" },
-    { name = "zstandard", marker = "extra == 'reconstruction'", specifier = ">=0.22" },
+    { name = "zstandard", specifier = ">=0.22" },
 ]
 provides-extras = ["record3d", "reconstruction"]
 

@@ -23,6 +23,7 @@ from astrea_common.messages import (
     MessageType,
     Role,
     RotateDone,
+    SplitModel,
 )
 from astrea_common.tls import BuildClientContext, BuildServerContext
 
@@ -443,3 +444,50 @@ def test_shipped_config_and_example_certificates_work_together():
                 return connection.peer.session
 
     assert asyncio.run(scenario()).startswith("TLSv1.3")
+
+
+def test_slow_transfer_of_a_large_frame_is_not_mistaken_for_a_dead_peer(pki):
+    bigChunk = bytes(3 * 1024 * 1024)
+
+    async def scenario():
+        hubPort, proxyPort = FreePort(), FreePort()
+        hubConfig, nodeConfig = MakeConfig(pki, hubPort), MakeConfig(pki, proxyPort)
+
+        async def pipe(source, sink, throttled):
+            try:
+                while data := await source.read(65536):
+                    sink.write(data)
+                    await sink.drain()
+                    if throttled:
+                        await asyncio.sleep(0.05)
+            except (ConnectionError, OSError):
+                pass
+            finally:
+                sink.close()
+
+        async def proxy(clientReader, clientWriter):
+            serverReader, serverWriter = await asyncio.open_connection("127.0.0.1", hubPort)
+            await asyncio.gather(pipe(clientReader, serverWriter, False), pipe(serverReader, clientWriter, True))
+
+        received = []
+
+        async def onMessage(connection, message):
+            received.append(message)
+
+        proxyServer = await asyncio.start_server(proxy, "127.0.0.1", proxyPort)
+        try:
+            async with RunningHub(hubConfig) as hub:
+                async with RunningNode(nodeConfig, "pi", Role.DEVICE_AGENT, onMessage=onMessage) as node:
+                    connection = await node.WaitConnected(WAIT_S)
+                    await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in hub.peers)
+                    chunk = SplitModel("big", bigChunk, chunkBytes=len(bigChunk))[0]
+                    started = time.monotonic()
+                    await hub.Send("pi", Role.DEVICE_AGENT, chunk)
+                    await WaitUntil(lambda: received, timeout=30)
+                    return time.monotonic() - started, connection.isOpen, received[0].data == bigChunk
+        finally:
+            proxyServer.close()
+
+    elapsed, stillOpen, intact = asyncio.run(scenario())
+    assert elapsed > HEARTBEAT_TIMEOUT_S, "the transfer must outlast the heartbeat timeout for this test to mean anything"
+    assert stillOpen and intact

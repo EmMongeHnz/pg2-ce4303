@@ -4,7 +4,8 @@
 the same `Connection`: a `HELLO` exchange that binds the declared node and role to the certificate and to
 `config.toml`, then a receive loop that enforces the direction rules of `astrea_common.messages`, a
 periodic `HEARTBEAT` (the peer echoes it, which gives the round-trip time) and a watchdog that closes
-the link when nothing was heard for `heartbeat-timeout-s`.
+the link when no bytes arrived for `heartbeat-timeout-s`. Liveness counts every received chunk, not only
+complete frames, so a large frame on a slow link does not look like a dead peer.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from astrea_common.config import ClusterConfig, NetworkSettings
-from astrea_common.framing import Frame, ProtocolError, ReadFrame, WriteFrame
+from astrea_common.framing import Frame, FrameDecoder, ProtocolError, ReadFrame, WriteFrame
 from astrea_common.messages import (
     PROTOCOL_VERSION,
     Heartbeat,
@@ -32,6 +33,7 @@ from astrea_common.tls import ClientContextFor, DescribeSession, PeerIdentityErr
 
 LOG = logging.getLogger("astrea.link")
 WATCHDOG_CHECKS_PER_TIMEOUT = 4
+RECEIVE_CHUNK_BYTES = 64 * 1024
 NS_PER_MS = 1_000_000
 
 MessageHandler = Callable[["Connection", Message], Awaitable[None]]
@@ -121,14 +123,17 @@ class Connection:
 
     async def _ReceiveLoop(self) -> None:
         reason = "receive loop ended"
+        decoder = FrameDecoder()
         try:
             while True:
-                frame = await ReadFrame(self._reader)
-                if frame is None:
+                data = await self._reader.read(RECEIVE_CHUNK_BYTES)
+                if not data:
+                    decoder.Finish()
                     reason = "peer closed the connection"
                     break
                 self._lastHeardNs = time.monotonic_ns()
-                await self._Dispatch(DecodeMessage(frame))
+                for frame in decoder.Feed(data):
+                    await self._Dispatch(DecodeMessage(frame))
         except asyncio.CancelledError:
             raise
         except ProtocolError as error:

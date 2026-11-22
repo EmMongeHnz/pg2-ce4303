@@ -11,6 +11,7 @@ dependencies = [
     "pillow>=10",
     "pyliblzfse>=0.4",
     "msgpack>=1.0",
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]
@@ -19,7 +20,6 @@ reconstruction = [
     "fast-simplification>=0.1.7",
     "scikit-image>=0.22",
     "scipy>=1.11",
-    "zstandard>=0.22",
 ]
 
 [dependency-groups]
