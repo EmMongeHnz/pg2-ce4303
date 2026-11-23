@@ -24,10 +24,11 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from astrea_common.tsdf import BYTES_PER_VOXEL, GridSpec, TsdfVolume
+from astrea_common.fusion import DEFAULT_TRUNCATION_MM, FuseViews, FusionSettings, KeptPercent
+from astrea_common.tsdf import BYTES_PER_VOXEL, GridSpec
 from astrea_common.view_package import ListViewPaths, ReadView, ViewPackage, WithPose
 from astrea_common.mesh import TriangleMesh
-from astrea_common.view_preprocess import ComputeViewWeights, PlatePoints, PreprocessParams, PreprocessView
+from astrea_common.view_preprocess import PlatePoints, PreprocessParams, PreprocessView
 from coordinator.meshing import ComponentCount, ExtractMesh, LargestComponent
 from coordinator.pose_refinement import FitTurntable, RefineAzimuthWithIcp, RefineWithIcp
 from coordinator.postprocess import LOD_HIGH_TRIANGLES, LOD_LOW_TRIANGLES, TAUBIN_ITERATIONS, BuildLods
@@ -36,7 +37,6 @@ LOD_BUDGETS = {"full": None, "high": LOD_HIGH_TRIANGLES, "low": LOD_LOW_TRIANGLE
 REPORT_NAME = "report.json"
 MIN_KEPT_PERCENT_WARNING = 2.0
 DEFAULT_VOXEL_MM = 0.65
-DEFAULT_TRUNCATION_MM = 5.2
 DEFAULT_MAX_VOXELS = 100_000_000
 GRID_MARGIN_TRUNCATIONS = 1.5
 BYTES_PER_GIB = 1024**3
@@ -55,6 +55,9 @@ class ReconstructSettings:
     bilinear: bool = True
     taubinIterations: int = TAUBIN_ITERATIONS
     refinePoses: str = "none"
+
+    def Fusion(self) -> FusionSettings:
+        return FusionSettings(self.truncationMm, self.weights, self.bilinear)
 
 
 @dataclass(frozen=True)
@@ -95,11 +98,6 @@ def IterateViews(viewPaths: list[Path]):
         yield ReadView(path)
 
 
-def KeptPercent(view: ViewPackage, cleanedDepthMm: np.ndarray) -> float:
-    valid = int((view.depthM > 0).sum())
-    return 100.0 * int((cleanedDepthMm > 0).sum()) / valid if valid else 0.0
-
-
 def MeasureObjectBounds(views, params: PreprocessParams) -> tuple[np.ndarray, np.ndarray]:
     """Bounding box (plate frame, mm) of the points that survive preprocessing in any view."""
     lows, highs = [], []
@@ -132,22 +130,11 @@ def EnsureGridFits(grid: GridSpec, maxVoxels: int) -> None:
         )
 
 
-def FuseViews(views, params: PreprocessParams, grid: GridSpec, settings: ReconstructSettings = ReconstructSettings()) -> tuple[TsdfVolume, list[float]]:
-    volume = TsdfVolume(grid, truncationMm=settings.truncationMm)
-    keptPercent = []
-    for view in views:
-        cleanedDepthMm = PreprocessView(view, params)
-        weights = ComputeViewWeights(cleanedDepthMm, view.intrinsics, params) if settings.weights else None
-        volume.Integrate(cleanedDepthMm, view.intrinsics, view.rotation, view.translationMm, view.rgb, weights=weights, bilinear=settings.bilinear)
-        keptPercent.append(KeptPercent(view, cleanedDepthMm))
-    return volume, keptPercent
-
-
 def RegistrationMesh(views: list[ViewPackage], params: PreprocessParams, settings: ReconstructSettings) -> TriangleMesh:
     """Surface fused from every view on a coarser grid, used as the target when aligning views to each other."""
     coarse = replace(settings, voxelMm=max(settings.voxelMm, REGISTRATION_VOXEL_MM), extentMm=None)
     grid = ChooseGrid(lambda: views, params, coarse)
-    volume, _ = FuseViews(views, params, grid, coarse)
+    volume, _ = FuseViews(views, params, grid, coarse.Fusion())
     return LargestComponent(ExtractMesh(volume))
 
 
@@ -196,7 +183,7 @@ def Reconstruct(
         viewSource = lambda: iter(refinedViews)
     grid = grid or ChooseGrid(viewSource, params, settings)
     start = time.monotonic()
-    volume, keptPercent = FuseViews(viewSource(), params, grid, settings)
+    volume, keptPercent = FuseViews(viewSource(), params, grid, settings.Fusion())
     fusionSeconds = time.monotonic() - start
     lods = BuildLods(volume, taubinIterations=settings.taubinIterations)
     outDir.mkdir(parents=True, exist_ok=True)
