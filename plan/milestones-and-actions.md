@@ -190,8 +190,8 @@ La reconstrucción se reparte entre ≥3 workers y da el mismo resultado que en 
 
 **Tareas**
 
-- [ ] M4.1: `worker/`: recibe `JOB_ASSIGN` (vistas + poses), integra en la rejilla común y devuelve en `JOB_RESULT` solo bloques con peso > 0, comprimidos con zstd; Depende de: M2.4, M3.3, M3.4;
-- [ ] M4.2: `coordinator`: merge exacto `D = Σ wᵢ·dᵢ / Σ wᵢ` (igual para color); Depende de: M3.3, M4.1;
+- [x] M4.1: `worker/`: recibe `JOB_ASSIGN` (vistas + poses), integra en la rejilla común y devuelve en `JOB_RESULT` solo bloques con peso > 0, comprimidos con zstd; Depende de: M2.4, M3.3, M3.4;
+- [x] M4.2: `coordinator`: merge exacto `D = Σ wᵢ·dᵢ / Σ wᵢ` (igual para color); Depende de: M3.3, M4.1;
 - [ ] M4.3: Medición de rendimiento por worker y reparto proporcional (la Pi 3 recibe pocas vistas); Depende de: M4.1;
 - [ ] M4.4: Timeout y reasignación del trabajo de un worker caído; Depende de: M2.6, M4.1;
 - [ ] M4.5: Benchmark 1 vs 3 workers; Depende de: M4.2, M4.3;
@@ -204,6 +204,9 @@ La reconstrucción se reparte entre ≥3 workers y da el mismo resultado que en 
 
 **Notas**
 
+- M4.1: `astrea-worker --name <nodo>` (`worker.service`): recibe `JOB_ASSIGN` por partes, preprocesa e integra en la rejilla común en un hilo (los latidos siguen vivos), y devuelve solo las teselas de 32³ vóxeles con peso > 0 comprimidas con zstd. Rechaza con `error` un trabajo que no cabe en `--max-grid-mib` (por defecto, la mitad de la memoria disponible). Codec en `astrea_common.job_codec` y `volume_blocks`.
+- M4.2: `astrea-coordinator reconstruct <sesiones> --min-workers N` (`coordinator.distributed`): reparte las vistas en round robin sobre la rejilla que fija el coordinador y fusiona los bloques con el promedio ponderado exacto. Hasta M4.3 el reparto es uniforme y un worker caído o con error aborta la corrida.
+- Criterio de equivalencia: validado en loopback con 3 workers (`tests/unit/test_distributed_reconstruction.py`: volumen igual al de un nodo con ε = 1e-4) y con el scan `cup` real a 1.3 mm (59 vistas, 3 procesos en una máquina: 54967 caras en `lod-full` en ambos casos, `lod-high` 29620 frente a 29619). Falta correrlo con host, laptop B y Pi.
 - Entregables: `worker/`, scheduling y merge en `host/coordinator/`, pruebas de equivalencia, tabla de speedup.
 
 ---
