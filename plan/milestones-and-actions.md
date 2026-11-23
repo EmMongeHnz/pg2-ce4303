@@ -116,24 +116,33 @@ Todo el tráfico entre los 3 nodos va por TCP con TLS 1.3 y autenticación mutua
 
 **Tareas**
 
-- [ ] M2.1: `pki/make-certs.sh` (OpenSSL): CA propia y un certificado por nodo (host, worker B, Pi); Depende de: M0.1;
-- [ ] M2.2: Contexto TLS en `common/`: TLS 1.3, mTLS obligatorio, ChaCha20-Poly1305 preferido, ECDHE; Depende de: M2.1;
-- [ ] M2.3: Framing `[u32 length][u8 type][payload msgpack]` con pruebas de tramas parciales y corruptas; Depende de: M0.1;
-- [ ] M2.4: Mensajes `HELLO`, `JOB_ASSIGN`, `JOB_RESULT`, `HEARTBEAT`, `INPUT_EVENT`, `CAMERA_STATE`, `MODEL_PUSH` (chunks + SHA-256); `ROTATE` / `ROTATE_DONE` definidos pero sin usar; Depende de: M2.3;
-- [ ] M2.5: `config.toml` con la lista estática de nodos; Depende de: M0.1;
-- [ ] M2.6: Conexión y heartbeat entre los 3 nodos reales; Depende de: M2.2, M2.4, M2.5;
-- [ ] M2.7: Especificación del protocolo en `docs/` coherente con N1–N4 del diagrama de bloques; Depende de: M2.4;
-- [ ] M2.8: Certificados de ejemplo para la entrega; Depende de: M2.1;
+- [x] M2.1: `pki/make-certs.sh` (OpenSSL): CA propia y un certificado por nodo (host, worker B, Pi); Depende de: M0.1;
+- [x] M2.2: Contexto TLS en `common/`: TLS 1.3, mTLS obligatorio, ChaCha20-Poly1305 preferido, ECDHE; Depende de: M2.1;
+- [x] M2.3: Framing `[u32 length][u8 type][payload msgpack]` con pruebas de tramas parciales y corruptas; Depende de: M0.1;
+- [x] M2.4: Mensajes `HELLO`, `JOB_ASSIGN`, `JOB_RESULT`, `HEARTBEAT`, `INPUT_EVENT`, `CAMERA_STATE`, `MODEL_PUSH` (chunks + SHA-256); `ROTATE` / `ROTATE_DONE` definidos pero sin usar; Depende de: M2.3;
+- [x] M2.5: `config.toml` con la lista estática de nodos; Depende de: M0.1;
+- [x] M2.6: Conexión y heartbeat entre los 3 nodos reales; Depende de: M2.2, M2.4, M2.5;
+- [x] M2.7: Especificación del protocolo en `docs/` coherente con N1–N4 del diagrama de bloques; Depende de: M2.4;
+- [x] M2.8: Certificados de ejemplo para la entrega; Depende de: M2.1;
 
 **Criterio de aceptación/éxito**
 
-- [ ] Cumple que los 3 nodos se conectan e intercambian `HEARTBEAT` (6)
+- [x] Cumple que los 3 nodos se conectan e intercambian `HEARTBEAT` (6)
 - [ ] Cumple que Wireshark muestra solo TLS 1.3 (2,6)
 - [ ] Cumple que se rechaza un cliente sin certificado y uno con certificado de otra CA (2,6)
 - [ ] Cumple que el protocolo queda congelado (3,4,7)
 
 **Notas**
 
+- M2.1: `pki/make-certs.sh` genera una CA ECDSA P-256 y un certificado por nodo (nombre en el SAN DNS, `--ip` opcional); `pki/openssl-chacha20.cnf` deja un proceso solo con ChaCha20-Poly1305 (Python no permite elegir suites TLS 1.3, se activa con `OPENSSL_CONF`).
+- M2.2: `astrea_common.tls`: TLS 1.3 fijo, mTLS obligatorio, confianza solo en la CA propia, el cliente verifica el nombre del hub y el hub lee el nombre del cliente desde el SAN.
+- M2.3: `astrea_common.framing`: `length` cuenta `type` + payload, tope de 4 MiB (los emisores apuntan a ≤ 1 MiB por trama), decodificador incremental probado con cortes en cualquier posición y flujos corruptos.
+- M2.4: `astrea_common.messages`: validación de campos, reglas de quién envía qué por rol, `MODEL_PUSH` en chunks con SHA-256 y bloques de arrays con zstd acotado. `JOB_ASSIGN` y `JOB_RESULT` ya traen sus campos definidos para M4. `ROTATE` / `ROTATE_DONE` existen pero el hub los rechaza.
+- M2.5: `config.toml` en la raíz (nodos, roles, rutas TLS con `{node}`, parámetros de heartbeat), validado por `astrea_common.config`.
+- M2.6: topología hub-and-spoke (el host escucha, worker B y la Pi se conectan) en `astrea_common.link`; `astrea-net-check serve|connect` verifica los enlaces. Validado en loopback con 3 nodos y certificados distintos, y en las máquinas reales: host (PC), laptop B (worker) y Pi 3 (worker y device-agent) conectados a la vez con `astrea-net-check`. La Pi negocia ChaCha20-Poly1305 con `OPENSSL_CONF=pki/openssl-chacha20.cnf` (pasos en `docs/protocol.md`, sección 10).
+- M2.7: especificación en `docs/protocol.md` (versionada con `git add -f`), con la guía de prueba en las máquinas reales.
+- M2.8: certificados de ejemplo en `pki/example/` (CA y nodos con claves de prueba, agregados con `git add -f`).
+- Criterios: el rechazo de clientes sin certificado o de otra CA, TLS 1.3 y el intercambio de `HEARTBEAT` están cubiertos por `tests/unit/test_tls.py` y `tests/unit/test_secure_link.py` (incluye un proxy que comprueba que lo único en la red son registros TLS). Los 3 nodos reales ya se conectan e intercambian `HEARTBEAT`; sigue sin marcarse Wireshark (captura en el host) y el rechazo con `openssl s_client` desde una máquina real (sección 10 de `docs/protocol.md`). El protocolo queda propuesto como congelado, pendiente de acuerdo del equipo.
 - M2.8: `.gitignore` excluye `pki/**/*.key` y `pki/**/*.pem`, así que los de ejemplo (CA y nodos con claves de prueba, nunca las de la demo) se agregan con `git add -f` o con una excepción `!` en `.gitignore`. Se incluyen en el paquete final junto con `config.toml` y el overlay (ver M7).
 - Entregables: `common/` (protocolo, TLS, config), `pki/`, pruebas de protocolo, especificación escrita.
 
