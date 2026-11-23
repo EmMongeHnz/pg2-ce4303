@@ -183,6 +183,12 @@ def _RequireInts(payload: dict[str, Any], key: str, length: int, minimum: int | 
     return tuple(_RequireInt({"value": item}, "value", minimum) for item in values)
 
 
+def _OptionalNumbers(payload: dict[str, Any], key: str) -> tuple[float, ...]:
+    if key not in payload:
+        return ()
+    return _RequireNumbers(payload, key, len(_RequireList(payload, key)))
+
+
 def _RequireNodeName(payload: dict[str, Any], key: str) -> str:
     name = _RequireStr(payload, key)
     if not NODE_NAME_PATTERN.match(name):
@@ -397,14 +403,14 @@ class ArrayBlob:
     data: bytes
 
     @staticmethod
-    def FromNumpy(array: np.ndarray, compression: Compression = Compression.ZSTD) -> "ArrayBlob":
+    def FromNumpy(array: np.ndarray, compression: Compression = Compression.ZSTD, level: int | None = None) -> "ArrayBlob":
         contiguous = np.ascontiguousarray(array)
         littleEndian = contiguous.astype(contiguous.dtype.newbyteorder("<"), copy=False)
         raw = littleEndian.tobytes()
         if compression is Compression.ZSTD:
-            from astrea_common.compression import ZstdCompress
+            from astrea_common.compression import DEFAULT_LEVEL, ZstdCompress
 
-            raw = ZstdCompress(raw)
+            raw = ZstdCompress(raw, DEFAULT_LEVEL if level is None else level)
         return ArrayBlob(littleEndian.dtype.str, tuple(contiguous.shape), compression, raw)
 
     def ToNumpy(self) -> np.ndarray:
@@ -605,7 +611,11 @@ class BlockPayload:
 
 @dataclass(frozen=True)
 class JobResult:
-    """Partial volume of one job as non-empty blocks; multi-part like `JobAssign`."""
+    """Partial volume of one job as non-empty blocks; multi-part like `JobAssign`.
+
+    `viewIndices` and `keptPercent` (percentage of depth kept by preprocessing, one per view, optional)
+    travel in part 0.
+    """
 
     MESSAGE_TYPE: ClassVar[MessageType] = MessageType.JOB_RESULT
     jobId: str
@@ -616,6 +626,7 @@ class JobResult:
     elapsedS: float
     viewIndices: tuple[int, ...]
     blocks: tuple[BlockPayload, ...]
+    keptPercent: tuple[float, ...] = ()
 
     def ToPayload(self) -> dict[str, Any]:
         return {
@@ -627,6 +638,7 @@ class JobResult:
             "elapsedS": self.elapsedS,
             "viewIndices": list(self.viewIndices),
             "blocks": [block.ToPayload() for block in self.blocks],
+            "keptPercent": list(self.keptPercent),
         }
 
     @classmethod
@@ -647,6 +659,7 @@ class JobResult:
             _RequireNumber(payload, "elapsedS"),
             viewIndices,
             tuple(BlockPayload.FromPayload(item) for item in blockMaps),
+            _OptionalNumbers(payload, "keptPercent"),
         )
 
 
