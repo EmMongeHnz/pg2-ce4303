@@ -70,7 +70,7 @@ Sub-estructuras:
 
 - **`params`** de `JOB_ASSIGN`: `preprocess` (mapa con campos de `PreprocessParams`; los que faltan toman su valor por defecto y una clave desconocida se rechaza), `weights` y `bilinear` (booleanos). `truncationMm` va aparte, en el mismo mensaje.
 - **Partes:** un trabajo se envía en varias tramas `JOB_ASSIGN` de ~1 MiB con el mismo `jobId` (`part` de 0 a `parts - 1`, hasta 4096). El worker empieza cuando llegaron todas. El resultado vuelve igual en tramas `JOB_RESULT`; `viewIndices` y `keptPercent` viajan en la parte 0.
-- **Un trabajo a la vez por worker:** si llega otro mientras trabaja, responde `JOB_RESULT` con `status = error` y `error = "worker busy"`. Un trabajo que no cabe en memoria, o con parámetros inválidos, también responde `error`.
+- **Un trabajo a la vez por worker:** un trabajo que llega mientras otro sigue calculando (por ejemplo, uno que dejó un coordinador caído) espera su turno. Si llegan partes de otro `jobId` antes de completar uno, o se cae el enlace a medias, el trabajo incompleto se descarta. Un trabajo que no cabe en memoria o con parámetros inválidos responde `JOB_RESULT` con `status = error`.
 - **Resultado:** solo las teselas de 32³ vóxeles con algún peso > 0, con `startIndex` en la rejilla común. Las matrices viajan sin pérdida (profundidad en float32), de modo que el coordinador obtiene el mismo volumen que una fusión en un nodo.
 - **Fusión en el coordinador:** `D = Σ wᵢ dᵢ / Σ wᵢ`, y lo mismo para el color, bloque a bloque sobre un único volumen acumulador. Los bloques de un worker se aplican solo cuando llegaron todas sus partes.
 
