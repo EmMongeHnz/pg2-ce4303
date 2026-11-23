@@ -46,7 +46,7 @@ def BuildParser() -> argparse.ArgumentParser:
 
 def PrintWorkers(result: DistributedResult) -> None:
     for stats in result.workers:
-        print(f"  {stats.node}: {stats.views} views, fusion {stats.fusionSeconds:.1f} s, {stats.blocks} blocks")
+        print(f"  {stats.node}: {stats.views} views, fusion {stats.fusionSeconds:.1f} s, {stats.blocks} blocks, sent {stats.sentBytes / 1024**2:.1f} MiB, received {stats.receivedBytes / 1024**2:.1f} MiB")
     print(f"  merge {result.mergeSeconds:.1f} s, total {result.wallSeconds:.1f} s")
 
 

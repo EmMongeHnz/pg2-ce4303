@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from astrea_common.config import ClusterConfig
 from astrea_common.fusion import FusionSettings
-from astrea_common.job_codec import BlockFromPayload, BuildAssignParts, JobOutcome, ResultAssembler
+from astrea_common.job_codec import BlockFromPayload, BlockPayloadBytes, BuildAssignParts, JobOutcome, ResultAssembler, ViewPayloadBytes
 from astrea_common.link import Connection, HubServer
 from astrea_common.messages import JobResult, JobStatus, Message, Role
 from astrea_common.tsdf import GridSpec, TsdfVolume
@@ -41,6 +41,8 @@ class WorkerStats:
     fusionSeconds: float
     roundTripSeconds: float
     blocks: int
+    sentBytes: int
+    receivedBytes: int
 
 
 @dataclass
@@ -55,16 +57,18 @@ class DistributedResult:
 @dataclass
 class _PendingJob:
     node: str
+    positions: list[int]
     views: list[ViewPackage]
     sentAt: float
+    sentBytes: int = 0
     finishedAt: float = 0.0
     assembler: ResultAssembler = field(default_factory=ResultAssembler)
     done: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
 
 
-def SplitEvenly(views: list[ViewPackage], workerCount: int) -> list[list[ViewPackage]]:
+def SplitEvenly(items: list, workerCount: int) -> list[list]:
     """Round robin, so each worker gets views spread all around the object."""
-    return [views[index::workerCount] for index in range(workerCount)]
+    return [items[index::workerCount] for index in range(workerCount)]
 
 
 class Coordinator:
@@ -103,7 +107,8 @@ class Coordinator:
             raise DistributedError("no workers to fuse with")
         started = time.monotonic()
         scanId = uuid.uuid4().hex[:8]
-        jobs = {f"{scanId}-{node}": _PendingJob(node, nodeViews, time.monotonic()) for node, nodeViews in zip(workers, SplitEvenly(views, len(workers))) if nodeViews}
+        shares = SplitEvenly(list(range(len(views))), len(workers))
+        jobs = {f"{scanId}-{node}": _PendingJob(node, positions, [views[position] for position in positions], time.monotonic()) for node, positions in zip(workers, shares) if positions}
         self._pending.update(jobs)
         try:
             await asyncio.gather(*(self._SendJob(jobId, job, grid, params, fusion) for jobId, job in jobs.items()))
@@ -115,12 +120,17 @@ class Coordinator:
                 self._pending.pop(jobId, None)
         mergeStarted = time.monotonic()
         volume = await asyncio.to_thread(self._MergeOutcomes, grid, fusion, outcomes)
-        stats = [WorkerStats(job.node, len(job.views), outcome.elapsedS, job.finishedAt - job.sentAt, len(outcome.blocks)) for job, outcome in zip(jobs.values(), outcomes)]
-        return DistributedResult(volume, self._KeptPercentInOrder(views, outcomes), stats, time.monotonic() - started, time.monotonic() - mergeStarted)
+        stats = [
+            WorkerStats(job.node, len(job.views), outcome.elapsedS, job.finishedAt - job.sentAt, len(outcome.blocks), job.sentBytes, sum(BlockPayloadBytes(block) for block in outcome.blocks))
+            for job, outcome in zip(jobs.values(), outcomes)
+        ]
+        keptPercent = self._KeptPercentInOrder(len(views), list(jobs.values()), outcomes)
+        return DistributedResult(volume, keptPercent, stats, time.monotonic() - started, time.monotonic() - mergeStarted)
 
     async def _SendJob(self, jobId: str, job: _PendingJob, grid: GridSpec, params: PreprocessParams, fusion: FusionSettings) -> None:
         parts = await asyncio.to_thread(BuildAssignParts, jobId, grid, params, fusion, job.views)
         job.sentAt = time.monotonic()
+        job.sentBytes = sum(ViewPayloadBytes(view) for part in parts for view in part.views)
         for part in parts:
             await self._hub.Send(job.node, Role.WORKER, part)
 
@@ -133,12 +143,15 @@ class Coordinator:
         return volume
 
     @staticmethod
-    def _KeptPercentInOrder(views: list[ViewPackage], outcomes: list[JobOutcome]) -> list[float]:
-        byView = {index: kept for outcome in outcomes for index, kept in zip(outcome.viewIndices, outcome.keptPercent)}
-        missing = [view.index for view in views if view.index not in byView]
-        if missing:
-            raise DistributedError(f"workers returned no statistics for views {missing}")
-        return [byView[view.index] for view in views]
+    def _KeptPercentInOrder(viewCount: int, jobs: list[_PendingJob], outcomes: list[JobOutcome]) -> list[float]:
+        """Statistics come back in the order the views were sent, so they are matched by position, not by view index."""
+        kept = [0.0] * viewCount
+        for job, outcome in zip(jobs, outcomes):
+            if len(outcome.keptPercent) != len(job.positions):
+                raise DistributedError(f"{job.node} returned statistics for {len(outcome.keptPercent)} of its {len(job.positions)} views")
+            for position, percent in zip(job.positions, outcome.keptPercent):
+                kept[position] = percent
+        return kept
 
     async def _OnMessage(self, connection: Connection, message: Message) -> None:
         if not isinstance(message, JobResult):
