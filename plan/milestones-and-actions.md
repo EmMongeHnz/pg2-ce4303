@@ -190,8 +190,8 @@ La reconstrucción se reparte entre ≥3 workers y da el mismo resultado que en 
 
 **Tareas**
 
-- [ ] M4.1: `worker/`: recibe `JOB_ASSIGN` (vistas + poses), integra en la rejilla común y devuelve en `JOB_RESULT` solo bloques con peso > 0, comprimidos con zstd; Depende de: M2.4, M3.3, M3.4;
-- [ ] M4.2: `coordinator`: merge exacto `D = Σ wᵢ·dᵢ / Σ wᵢ` (igual para color); Depende de: M3.3, M4.1;
+- [x] M4.1: `worker/`: recibe `JOB_ASSIGN` (vistas + poses), integra en la rejilla común y devuelve en `JOB_RESULT` solo bloques con peso > 0, comprimidos con zstd; Depende de: M2.4, M3.3, M3.4;
+- [x] M4.2: `coordinator`: merge exacto `D = Σ wᵢ·dᵢ / Σ wᵢ` (igual para color); Depende de: M3.3, M4.1;
 - [ ] M4.3: Medición de rendimiento por worker y reparto proporcional (la Pi 3 recibe pocas vistas); Depende de: M4.1;
 - [ ] M4.4: Timeout y reasignación del trabajo de un worker caído; Depende de: M2.6, M4.1;
 - [ ] M4.5: Benchmark 1 vs 3 workers; Depende de: M4.2, M4.3;
@@ -204,6 +204,10 @@ La reconstrucción se reparte entre ≥3 workers y da el mismo resultado que en 
 
 **Notas**
 
+- M4.1: `astrea-worker --name <nodo>` (`worker.service`): recibe `JOB_ASSIGN` por partes, preprocesa e integra en la rejilla común en un hilo (los latidos siguen vivos), y devuelve solo las teselas de 32³ vóxeles con peso > 0 comprimidas con zstd. Rechaza con `error` un trabajo que no cabe en `--max-grid-mib` (por defecto, un tercio de la memoria disponible: medido, un worker llega a ~2.2 veces el tamaño del volumen). Codec en `astrea_common.job_codec` y `volume_blocks`.
+- M4.2: `astrea-coordinator reconstruct <sesiones> --min-workers N` (`coordinator.distributed`): reparte las vistas en round robin sobre la rejilla que fija el coordinador y fusiona los bloques con el promedio ponderado exacto. Hasta M4.3 el reparto es uniforme y un worker caído o con error aborta la corrida.
+- Tamaños medidos con el scan `cup` (59 vistas, loopback, 3 workers): con la rejilla por defecto de 0.65 mm es de 332×334×256 (28.4 M de vóxeles, 568 MiB por volumen); cada worker llega a ~1.3 GB de RSS, recibe ~18 MiB de vistas y devuelve ~142 MiB comprimidos; fusión ~100 s por worker (20 vistas) y merge 3.9 s, 110 s en total. Una Pi 3 no puede con esa rejilla (volumen de 568 MiB y pico de ~1.3 GB): con `--voxel-mm 1.3` el mismo scan pide 3.7 M de vóxeles (74 MiB). Hasta M4.4 (exclusión de un worker que falla) la Pi solo entra en corridas con vóxel grueso.
+- Criterio de equivalencia: validado en loopback con 3 workers (`tests/unit/test_distributed_reconstruction.py`: volumen igual al de un nodo con ε = 1e-4) y con el scan `cup` real a 1.3 mm (59 vistas, 3 procesos en una máquina: 54967 caras en `lod-full` en ambos casos, `lod-high` 29620 frente a 29619). Corrida en máquinas reales con host y laptop B a 0.65 mm confirmada por el equipo (tiempos por anotar); falta la corrida con la Pi (a 1.3 mm) y la comparación de tiempos contra un nodo.
 - Entregables: `worker/`, scheduling y merge en `host/coordinator/`, pruebas de equivalencia, tabla de speedup.
 
 ---

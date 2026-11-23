@@ -52,7 +52,7 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 |---|---|---|
 | `HELLO` | 1 | `protocolVersion` int, `node` str, `role` str |
 | `JOB_ASSIGN` | 2 | `jobId` str, `part`/`parts` int, `grid {originMm[3], voxelMm, shape[3]}`, `truncationMm`, `params` mapa (overrides de `PreprocessParams` y opciones TSDF), `views[]` |
-| `JOB_RESULT` | 3 | `jobId` str, `part`/`parts` int, `status` (`ok` / `error`), `error` str, `elapsedS`, `viewIndices[]`, `blocks[]` |
+| `JOB_RESULT` | 3 | `jobId` str, `part`/`parts` int, `status` (`ok` / `error`), `error` str, `elapsedS` (segundos de fusión), `viewIndices[]`, `blocks[]`, `keptPercent[]` (opcional, porcentaje de profundidad que conserva el preprocesado por vista, en el mismo orden que `viewIndices`) |
 | `HEARTBEAT` | 4 | `sequence` int, `sentAtNs` int, `echo` bool |
 | `INPUT_EVENT` | 5 | `source`, `code`, `value`, `timestampNs` (espejo de `struct HoloEvent`; `source`: 1 joystick, 2 gesto ZX) |
 | `CAMERA_STATE` | 6 | `yaw`, `pitch`, `zoom` float, `modelId` str |
@@ -65,6 +65,14 @@ Sub-estructuras:
 - **`blocks[]`** (de `JOB_RESULT`): `startIndex[3]` y `shape[3]` de una caja de vóxeles con peso > 0, y `tsdf`, `weight`, `color` como `ArrayBlob`.
 - **`ArrayBlob`**: `dtype` (enteros o flotantes de hasta 8 bytes, little endian), `shape` (1 a 4 dimensiones), `compression` (`none` / `zstd`), `data`. La descompresión está acotada por el tamaño que declara `shape`.
 - **Modelos:** el receptor junta los chunks en cualquier orden y acepta el modelo solo si el tamaño y el SHA-256 coinciden (`ModelAssembler`).
+
+### Trabajos de reconstrucción (N1)
+
+- **`params`** de `JOB_ASSIGN`: `preprocess` (mapa con campos de `PreprocessParams`; los que faltan toman su valor por defecto y una clave desconocida se rechaza), `weights` y `bilinear` (booleanos). `truncationMm` va aparte, en el mismo mensaje.
+- **Partes:** un trabajo se envía en varias tramas `JOB_ASSIGN` de ~1 MiB con el mismo `jobId` (`part` de 0 a `parts - 1`, hasta 4096). El worker empieza cuando llegaron todas. El resultado vuelve igual en tramas `JOB_RESULT`; `viewIndices` y `keptPercent` viajan en la parte 0.
+- **Un trabajo a la vez por worker:** un trabajo que llega mientras otro sigue calculando (por ejemplo, uno que dejó un coordinador caído) espera su turno. Si llegan partes de otro `jobId` antes de completar uno, o se cae el enlace a medias, el trabajo incompleto se descarta. Un trabajo que no cabe en memoria o con parámetros inválidos responde `JOB_RESULT` con `status = error`.
+- **Resultado:** solo las teselas de 32³ vóxeles con algún peso > 0, con `startIndex` en la rejilla común. Las matrices viajan sin pérdida (profundidad en float32), de modo que el coordinador obtiene el mismo volumen que una fusión en un nodo.
+- **Fusión en el coordinador:** `D = Σ wᵢ dᵢ / Σ wᵢ`, y lo mismo para el color, bloque a bloque sobre un único volumen acumulador. Los bloques de un worker se aplican solo cuando llegaron todas sus partes.
 
 ## 6. Quién puede enviar qué
 
