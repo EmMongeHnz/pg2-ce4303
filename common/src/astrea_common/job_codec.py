@@ -119,11 +119,11 @@ def BlockFromPayload(payload: BlockPayload) -> VolumeBlock:
     return VolumeBlock(payload.startIndex, tsdf, weight, color)
 
 
-def _ViewBytes(view: ViewPayload) -> int:
+def ViewPayloadBytes(view: ViewPayload) -> int:
     return len(view.rgb.data) + len(view.depthM.data)
 
 
-def _BlockBytes(block: BlockPayload) -> int:
+def BlockPayloadBytes(block: BlockPayload) -> int:
     return len(block.tsdf.data) + len(block.weight.data) + len(block.color.data)
 
 
@@ -146,7 +146,7 @@ def BuildAssignParts(
     jobId: str, grid: GridSpec, params: PreprocessParams, fusion: FusionSettings, views: Sequence[ViewPackage], maxPartBytes: int = MAX_PART_BYTES
 ) -> list[JobAssign]:
     payloads = [ViewToPayload(view) for view in views]
-    groups = _GroupBySize(payloads, _ViewBytes, maxPartBytes)
+    groups = _GroupBySize(payloads, ViewPayloadBytes, maxPartBytes)
     gridPayload, paramsPayload = GridToPayload(grid), ParamsToPayload(params, fusion)
     return [JobAssign(jobId, index, len(groups), gridPayload, fusion.truncationMm, paramsPayload, tuple(group)) for index, group in enumerate(groups)]
 
@@ -159,7 +159,7 @@ def BuildResultParts(
     blocks: Sequence[BlockPayload],
     maxPartBytes: int = MAX_PART_BYTES,
 ) -> list[JobResult]:
-    groups = _GroupBySize(blocks, _BlockBytes, maxPartBytes)
+    groups = _GroupBySize(blocks, BlockPayloadBytes, maxPartBytes)
     parts = []
     for index, group in enumerate(groups):
         first = index == 0
@@ -216,6 +216,10 @@ class AssignAssembler:
 
     def __init__(self) -> None:
         self._collector: _PartCollector | None = None
+
+    @property
+    def jobId(self) -> str | None:
+        return None if self._collector is None else self._collector.jobId
 
     def Add(self, part: JobAssign) -> AssignedJob | None:
         if self._collector is None:

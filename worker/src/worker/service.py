@@ -1,6 +1,7 @@
 """Worker service: receives views over the secure link, fuses them into a partial TSDF and returns its blocks.
 
-One job at a time. The fusion runs in a thread so the receive loop keeps answering heartbeats; a job whose
+One job at a time; a job that arrives while another is still computing (for instance one left over from a
+coordinator that died) waits its turn. The fusion runs in a thread so the receive loop keeps answering heartbeats; a job whose
 grid does not fit in memory is refused with an error result instead of being attempted.
 """
 
@@ -28,12 +29,13 @@ from astrea_common.volume_blocks import DEFAULT_TILE_VOXELS, IterateBlocks
 
 LOG = logging.getLogger("astrea.worker")
 MEMINFO_PATH = Path("/proc/meminfo")
-MEMORY_SHARE_FOR_VOLUME = 0.5
+MEMORY_SHARE_FOR_VOLUME = 0.35
 FALLBACK_MAX_GRID_BYTES = 1024**3
 
 
 def DefaultMaxGridBytes() -> int:
-    """Half of the memory available now: the rest is for the integration temporaries and the encoded blocks."""
+    """About a third of the memory available now. Measured: a worker peaks at ~2.2x the volume size (integration
+    temporaries plus the encoded blocks), so a larger share would exhaust the machine."""
     try:
         for line in MEMINFO_PATH.read_text().splitlines():
             if line.startswith("MemAvailable:"):
@@ -60,23 +62,30 @@ class WorkerService:
         self.maxGridBytes = maxGridBytes if maxGridBytes is not None else DefaultMaxGridBytes()
         self.jobsDone = 0
         self._assembler = AssignAssembler()
-        self._runningJob: asyncio.Task | None = None
-        self._client = NodeClient(config, nodeName, role, onMessage=self._OnMessage, sslContext=sslContext)
+        self._tasks: set[asyncio.Task] = set()
+        self._jobSlot = asyncio.Lock()
+        self._client = NodeClient(config, nodeName, role, onMessage=self._OnMessage, onDisconnected=self._OnDisconnected, sslContext=sslContext)
 
     async def Run(self) -> None:
         await self._client.Run()
 
     async def Stop(self) -> None:
         await self._client.Stop()
-        if self._runningJob is not None:
-            self._runningJob.cancel()
+        for task in list(self._tasks):
+            task.cancel()
 
     async def WaitConnected(self, timeout: float) -> Connection:
         return await self._client.WaitConnected(timeout)
 
+    async def _OnDisconnected(self, connection: Connection, reason: str) -> None:
+        self._assembler = AssignAssembler()
+
     async def _OnMessage(self, connection: Connection, message: Message) -> None:
         if not isinstance(message, JobAssign):
             return
+        if self._assembler.jobId not in (None, message.jobId):
+            LOG.warning("dropping the incomplete job '%s' in favour of '%s'", self._assembler.jobId, message.jobId)
+            self._assembler = AssignAssembler()
         try:
             job = self._assembler.Add(message)
         except InvalidMessage as error:
@@ -86,14 +95,14 @@ class WorkerService:
         if job is None:
             return
         self._assembler = AssignAssembler()
-        if self._runningJob is not None and not self._runningJob.done():
-            await self._Reply(connection, [BuildErrorResult(job.jobId, "worker busy")])
-            return
-        self._runningJob = asyncio.create_task(self._RunJob(connection, job))
+        task = asyncio.create_task(self._RunJob(connection, job))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _RunJob(self, connection: Connection, job: AssignedJob) -> None:
         try:
-            parts = await self._Process(job)
+            async with self._jobSlot:
+                parts = await self._Process(job)
         except asyncio.CancelledError:
             raise
         except Exception as error:

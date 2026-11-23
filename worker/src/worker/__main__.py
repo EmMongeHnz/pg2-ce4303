@@ -1,7 +1,7 @@
 """Worker node: `uv run astrea-worker --name worker-b` connects to the hub and fuses the views it is assigned.
 
 Launch the Pi with `OPENSSL_CONF=pki/openssl-chacha20.cnf` to force ChaCha20-Poly1305. `--max-grid-mib`
-limits the size of the voxel grid this worker accepts (default: half of the available memory).
+limits the size of the voxel grid this worker accepts (default: a third of the available memory).
 """
 
 import argparse
