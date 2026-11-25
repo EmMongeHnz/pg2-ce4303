@@ -184,11 +184,18 @@ class Coordinator:
             except asyncio.TimeoutError as error:
                 raise DistributedError(f"{job.node} did not finish within {timeoutS:.0f} s") from error
         finally:
-            if job.done.done() and not job.done.cancelled():
-                job.done.exception()
+            self._RetireJob(job)
         if len(outcome.keptPercent) != len(job.positions):
             raise DistributedError(f"{job.node} returned statistics for {len(outcome.keptPercent)} of its {len(job.positions)} views")
         return outcome
+
+    @staticmethod
+    def _RetireJob(job: _PendingJob) -> None:
+        """Nobody waits for this job any more: a later disconnection or result must not leave an unread exception."""
+        if not job.done.done():
+            job.done.cancel()
+        elif not job.done.cancelled():
+            job.done.exception()
 
     async def _SendJob(self, jobId: str, job: _PendingJob, grid: GridSpec, params: PreprocessParams, fusion: FusionSettings) -> None:
         parts = await asyncio.to_thread(BuildAssignParts, jobId, grid, params, fusion, job.views)

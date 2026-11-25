@@ -289,3 +289,26 @@ def test_worker_still_computing_for_a_dead_coordinator_does_not_refuse_the_next_
             await asyncio.gather(runner, return_exceptions=True)
 
     AssertSameVolume(asyncio.run(scenario()).volume, SingleNode()[0])
+
+
+def test_a_worker_lost_after_its_job_was_given_up_leaves_no_unread_exception(pki, caplog):
+    import gc
+    import logging
+    from types import SimpleNamespace
+
+    from coordinator.distributed import _PendingJob
+
+    async def scenario():
+        coordinator = Coordinator(MakeConfig(pki, FreePort(), NODES))
+        job = _PendingJob("worker-b", [0, 1], [], 0.0)
+        coordinator._pending["lost"] = job
+        Coordinator._RetireJob(job)
+        lostPeer = SimpleNamespace(peer=SimpleNamespace(node="worker-b", role=Role.WORKER))
+        await coordinator._OnPeerLost(lostPeer, "connection reset")
+        return job
+
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        job = asyncio.run(scenario())
+        del job
+        gc.collect()
+    assert not [record for record in caplog.records if "never retrieved" in record.getMessage()]
