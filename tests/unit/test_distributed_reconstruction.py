@@ -27,12 +27,29 @@ def SingleNode(views=None):
     return FuseViews(views if views is not None else Views(), PARAMS, SMALL_GRID, FUSION)
 
 
+class SlowWorker(WorkerService):
+    """Takes `delayS` before fusing, long enough for a test to pull the plug in the middle of the job."""
+
+    delayS = 1.5
+
+    async def _Process(self, job):
+        await asyncio.sleep(self.delayS)
+        return await super()._Process(job)
+
+
+class StuckWorker(WorkerService):
+    """Stays connected and answers heartbeats but never finishes a job."""
+
+    async def _Process(self, job):
+        await asyncio.sleep(3600)
+
+
 @asynccontextmanager
-async def Cluster(pki, workerNames: list[str], maxGridBytes: dict[str, int] | None = None):
+async def Cluster(pki, workerNames: list[str], maxGridBytes: dict[str, int] | None = None, kinds: dict[str, type] | None = None):
     config = MakeConfig(pki, FreePort(), NODES)
     coordinator = Coordinator(config)
     await coordinator.Start()
-    services = [WorkerService(config, name, maxGridBytes=(maxGridBytes or {}).get(name)) for name in workerNames]
+    services = [(kinds or {}).get(name, WorkerService)(config, name, maxGridBytes=(maxGridBytes or {}).get(name)) for name in workerNames]
     runners = [asyncio.create_task(service.Run()) for service in services]
     try:
         await coordinator.WaitForWorkers(len(workerNames), CONNECT_S)
@@ -86,12 +103,68 @@ def test_fewer_views_than_workers_still_merges_exactly(pki):
     assert len(result.workers) == 2
 
 
-def test_worker_refuses_a_grid_larger_than_its_memory_limit(pki):
+def test_a_worker_that_refuses_the_grid_hands_its_views_to_the_others(pki):
     async def scenario():
         async with Cluster(pki, ["host", "worker-b"], maxGridBytes={"worker-b": 1024}) as (coordinator, _):
+            return await coordinator.Fuse(Views(), SMALL_GRID, PARAMS, FUSION, coordinator.ConnectedWorkers())
+
+    result = asyncio.run(scenario())
+    single, singleKept = SingleNode()
+    AssertSameVolume(result.volume, single)
+    np.testing.assert_allclose(result.keptPercent, singleKept)
+    assert [stats.node for stats in result.workers] == ["host", "host"], "the host ran its own share and then the views of worker-b"
+    assert sum(stats.views for stats in result.workers) == 24
+    assert len(result.failures) == 1 and "worker-b failed the job: grid needs" in result.failures[0]
+
+
+def test_when_every_worker_refuses_the_grid_the_run_fails_and_says_why(pki):
+    async def scenario():
+        async with Cluster(pki, ["host", "worker-b"], maxGridBytes={"host": 1024, "worker-b": 1024}) as (coordinator, _):
             await coordinator.Fuse(Views(), SMALL_GRID, PARAMS, FUSION, coordinator.ConnectedWorkers())
 
-    with pytest.raises(DistributedError, match="worker-b failed the job: grid needs"):
+    with pytest.raises(DistributedError, match="no workers left to fuse 24 of 24 views.*grid needs"):
+        asyncio.run(scenario())
+
+
+def test_killing_a_worker_in_the_middle_of_the_job_still_finishes_with_the_same_volume(pki):
+    async def scenario():
+        views = Views()
+        async with Cluster(pki, ["host", "worker-b", "pi"], kinds={"worker-b": SlowWorker}) as (coordinator, services):
+            fusing = asyncio.create_task(coordinator.Fuse(views, SMALL_GRID, PARAMS, FUSION, coordinator.ConnectedWorkers()))
+            await WaitUntil(lambda: any(job.node == "worker-b" and job.sentAt for job in coordinator._pending.values()))
+            await asyncio.sleep(0.3)
+            await services[1].Stop()
+            return await fusing
+
+    result = asyncio.run(scenario())
+    single, singleKept = SingleNode()
+    AssertSameVolume(result.volume, single)
+    np.testing.assert_allclose(result.keptPercent, singleKept)
+    assert sum(stats.views for stats in result.workers) == 24
+    assert "worker-b" not in [stats.node for stats in result.workers]
+    assert len(result.failures) == 1 and result.failures[0].startswith("worker-b: worker-b disconnected")
+
+
+def test_a_worker_that_never_finishes_is_dropped_after_the_job_timeout(pki):
+    async def scenario():
+        async with Cluster(pki, ["host", "worker-b"], kinds={"worker-b": StuckWorker}) as (coordinator, _):
+            return await coordinator.Fuse(Views(), SMALL_GRID, PARAMS, FUSION, coordinator.ConnectedWorkers(), jobTimeoutS=1.0)
+
+    result = asyncio.run(scenario())
+    AssertSameVolume(result.volume, SingleNode()[0])
+    assert result.failures == ["worker-b: worker-b did not finish within 1 s"]
+
+
+def test_losing_the_only_worker_fails_with_the_views_it_left_unfused(pki):
+    async def scenario():
+        async with Cluster(pki, ["worker-b"], kinds={"worker-b": SlowWorker}) as (coordinator, services):
+            fusing = asyncio.create_task(coordinator.Fuse(Views(), SMALL_GRID, PARAMS, FUSION, ["worker-b"]))
+            await WaitUntil(lambda: any(job.sentAt for job in coordinator._pending.values()))
+            await asyncio.sleep(0.3)
+            await services[0].Stop()
+            await fusing
+
+    with pytest.raises(DistributedError, match="no workers left to fuse 24 of 24 views .*disconnected"):
         asyncio.run(scenario())
 
 
@@ -216,3 +289,26 @@ def test_worker_still_computing_for_a_dead_coordinator_does_not_refuse_the_next_
             await asyncio.gather(runner, return_exceptions=True)
 
     AssertSameVolume(asyncio.run(scenario()).volume, SingleNode()[0])
+
+
+def test_a_worker_lost_after_its_job_was_given_up_leaves_no_unread_exception(pki, caplog):
+    import gc
+    import logging
+    from types import SimpleNamespace
+
+    from coordinator.distributed import _PendingJob
+
+    async def scenario():
+        coordinator = Coordinator(MakeConfig(pki, FreePort(), NODES))
+        job = _PendingJob("worker-b", [0, 1], [], 0.0)
+        coordinator._pending["lost"] = job
+        Coordinator._RetireJob(job)
+        lostPeer = SimpleNamespace(peer=SimpleNamespace(node="worker-b", role=Role.WORKER))
+        await coordinator._OnPeerLost(lostPeer, "connection reset")
+        return job
+
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        job = asyncio.run(scenario())
+        del job
+        gc.collect()
+    assert not [record for record in caplog.records if "never retrieved" in record.getMessage()]

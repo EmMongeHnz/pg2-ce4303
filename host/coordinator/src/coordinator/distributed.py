@@ -4,6 +4,10 @@ The grid, the poses and the parameters are fixed here, so every worker integrate
 Each worker returns one partial volume as sparse blocks; blocks are folded into a single accumulator volume
 with the exact weighted average only after all the parts of a worker's result arrived, so a result that never
 completes can be discarded without leaving a trace in the merged volume.
+
+A worker that disconnects, refuses the job, answers with bad statistics or does not finish in time is dropped
+for the rest of the run and its views go to the workers that are left in a new round. The merge does not depend
+on which worker fused which view, so the result is the same as if nothing had failed.
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ class DistributedError(RuntimeError):
     pass
 
 
+JOB_FAILURES = (DistributedError, ConnectionError, OSError, asyncio.TimeoutError)
+
+
 @dataclass(frozen=True)
 class WorkerStats:
     node: str
@@ -52,6 +59,7 @@ class DistributedResult:
     workers: list[WorkerStats]
     wallSeconds: float
     mergeSeconds: float
+    failures: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,25 +115,87 @@ class Coordinator:
             raise DistributedError("no workers to fuse with")
         started = time.monotonic()
         scanId = uuid.uuid4().hex[:8]
-        shares = SplitEvenly(list(range(len(views))), len(workers))
-        jobs = {f"{scanId}-{node}": _PendingJob(node, positions, [views[position] for position in positions], time.monotonic()) for node, positions in zip(workers, shares) if positions}
-        self._pending.update(jobs)
-        try:
-            await asyncio.gather(*(self._SendJob(jobId, job, grid, params, fusion) for jobId, job in jobs.items()))
-            outcomes = await asyncio.wait_for(asyncio.gather(*(job.done for job in jobs.values())), jobTimeoutS)
-        except asyncio.TimeoutError as error:
-            raise DistributedError(f"workers did not finish within {jobTimeoutS:.0f} s") from error
-        finally:
-            for jobId in jobs:
-                self._pending.pop(jobId, None)
+        remaining = list(range(len(views)))
+        completed: list[tuple[_PendingJob, JobOutcome]] = []
+        failures: list[str] = []
+        failed: set[str] = set()
+        attempt = 0
+        while remaining:
+            connected = self.ConnectedWorkers()
+            candidates = [node for node in workers if node not in failed and node in connected]
+            if not candidates:
+                reason = "; ".join(failures) or "none of them is connected"
+                raise DistributedError(f"no workers left to fuse {len(remaining)} of {len(views)} views ({reason})")
+            shares = SplitEvenly(remaining, len(candidates))
+            jobs = {
+                f"{scanId}-{attempt}-{node}": _PendingJob(node, positions, [views[position] for position in positions], time.monotonic())
+                for node, positions in zip(candidates, shares)
+                if positions
+            }
+            attempt += 1
+            remaining = await self._RunRound(jobs, grid, params, fusion, jobTimeoutS, completed, failures, failed)
         mergeStarted = time.monotonic()
+        outcomes = [outcome for _, outcome in completed]
         volume = await asyncio.to_thread(self._MergeOutcomes, grid, fusion, outcomes)
         stats = [
             WorkerStats(job.node, len(job.views), outcome.elapsedS, job.finishedAt - job.sentAt, len(outcome.blocks), job.sentBytes, sum(BlockPayloadBytes(block) for block in outcome.blocks))
-            for job, outcome in zip(jobs.values(), outcomes)
+            for job, outcome in completed
         ]
-        keptPercent = self._KeptPercentInOrder(len(views), list(jobs.values()), outcomes)
-        return DistributedResult(volume, keptPercent, stats, time.monotonic() - started, time.monotonic() - mergeStarted)
+        keptPercent = self._KeptPercentInOrder(len(views), [job for job, _ in completed], outcomes)
+        return DistributedResult(volume, keptPercent, stats, time.monotonic() - started, time.monotonic() - mergeStarted, failures)
+
+    async def _RunRound(
+        self,
+        jobs: dict[str, _PendingJob],
+        grid: GridSpec,
+        params: PreprocessParams,
+        fusion: FusionSettings,
+        jobTimeoutS: float,
+        completed: list[tuple[_PendingJob, JobOutcome]],
+        failures: list[str],
+        failed: set[str],
+    ) -> list[int]:
+        """Runs one job per worker at once and returns the positions of the views whose job failed."""
+        self._pending.update(jobs)
+        try:
+            results = await asyncio.gather(*(self._RunJob(jobId, job, grid, params, fusion, jobTimeoutS) for jobId, job in jobs.items()), return_exceptions=True)
+        finally:
+            for jobId in jobs:
+                self._pending.pop(jobId, None)
+        lost: list[int] = []
+        for job, result in zip(jobs.values(), results):
+            if isinstance(result, JobOutcome):
+                completed.append((job, result))
+                continue
+            if not isinstance(result, JOB_FAILURES):
+                raise result
+            reason = str(result) or type(result).__name__
+            LOG.warning("%s failed (%s); its %d views go to the other workers", job.node, reason, len(job.positions))
+            failed.add(job.node)
+            failures.append(f"{job.node}: {reason}")
+            lost.extend(job.positions)
+        return sorted(lost)
+
+    async def _RunJob(self, jobId: str, job: _PendingJob, grid: GridSpec, params: PreprocessParams, fusion: FusionSettings, timeoutS: float) -> JobOutcome:
+        try:
+            await self._SendJob(jobId, job, grid, params, fusion)
+            try:
+                outcome = await asyncio.wait_for(job.done, timeoutS)
+            except asyncio.TimeoutError as error:
+                raise DistributedError(f"{job.node} did not finish within {timeoutS:.0f} s") from error
+        finally:
+            self._RetireJob(job)
+        if len(outcome.keptPercent) != len(job.positions):
+            raise DistributedError(f"{job.node} returned statistics for {len(outcome.keptPercent)} of its {len(job.positions)} views")
+        return outcome
+
+    @staticmethod
+    def _RetireJob(job: _PendingJob) -> None:
+        """Nobody waits for this job any more: a later disconnection or result must not leave an unread exception."""
+        if not job.done.done():
+            job.done.cancel()
+        elif not job.done.cancelled():
+            job.done.exception()
 
     async def _SendJob(self, jobId: str, job: _PendingJob, grid: GridSpec, params: PreprocessParams, fusion: FusionSettings) -> None:
         parts = await asyncio.to_thread(BuildAssignParts, jobId, grid, params, fusion, job.views)
