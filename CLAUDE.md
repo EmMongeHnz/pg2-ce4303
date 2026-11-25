@@ -24,9 +24,11 @@ cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build 
                                           # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
+make -C net                               # secure network in C: build/astrea-netd (TLS daemon of every node) and build/astrea-device-agent; needs build-essential and libssl-dev
+make -C net SAN=1                         # the same with AddressSanitizer and UndefinedBehaviorSanitizer (build-san/); run the tests against it with ASTREA_NETD / ASTREA_DEVICE_AGENT
 uv run astrea-host --models-dir out/models   # host: camera state, one <id>.glb per model pushed to the Pi (runs next to astrea-coordinator)
-OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-device-agent --name pi
-                                          # Pi: forwards /dev/holo-input to the host and feeds the hologram renderer (--renderer-socket, --models-dir)
+uv run astrea-device-agent --name pi --models-dir out/models
+                                          # Pi: the C agent; forwards /dev/holo-input to the host and feeds the hologram renderer (--renderer-socket, --prefer-chacha20 is the default there)
 dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 ```
 
@@ -42,6 +44,7 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 
 ## Code layout
 
+- **The driver and the secure network are written in C** (course requirement): the kernel module in `driver/holo-io/`, and everything that touches the network in `net/` (OpenSSL TLS 1.3 mutual auth, framing, msgpack subset, heartbeats, hub and node links, config parser) as the static library `libastrea-net.a`, the daemon `astrea-netd` and the device agent `astrea-device-agent`. Python never opens a network socket: `astrea_common.link` (`HubServer`, `NodeClient`, `Connection`) starts `astrea-netd` and talks to it over a Unix socket (see `docs/protocol.md`). Message fields are defined and validated in Python (`astrea_common.messages`); the C side only needs the frame type, HELLO and HEARTBEAT, and the fields of the messages the agent consumes.
 - Python is a single uv project (`pyproject.toml` at the root). Each component keeps its package under `<component>/src/<package>/` and is mapped in `[tool.setuptools.package-dir]`: `astrea_common`, `capture_service`, `coordinator`, `worker`, `device_agent`.
 - The TSDF core (`astrea_common.tsdf`, NumPy only) is shared by the workers and the coordinator and works in millimetres in the plate frame; meshing, post-processing (Taubin, quadric decimation with `fast-simplification`, vertex colour, GLB + zstd) and metrics (`scikit-image`, `scipy`, extra `reconstruction`) live in `coordinator`; zstd helpers for network payloads are in `astrea_common.compression`. Integration uses per-observation weights (incidence angle and depth, computed per view) with no cap, and colour is a float32 weighted mean, so partial volumes still merge exactly.
 - The ArUco ring geometry (`astrea_common.aruco_ring.RingLayout`) is shared by the generator and the pose estimator; never duplicate it.
@@ -49,17 +52,17 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 
 ## Architecture (planned)
 
-Three processing nodes that talk only over TCP with TLS 1.3 mutual auth (own CA, one cert per node, ChaCha20-Poly1305 preferred because the Pi 3 has no AES acceleration):
+Three processing nodes that talk only over TCP with TLS 1.3 mutual auth (own CA, one cert per node, ChaCha20-Poly1305 offered first with `--prefer-chacha20` because the Pi 3 has no AES acceleration), implemented in C:
 
 1. **Host PC**: `capture-service` (Record3D RGB-D over USB, pose from an ArUco ring on a manual turntable, automatic keyframes every ~10°), `coordinator` (splits views across workers, exact weighted TSDF merge, meshing, LOD export to GLB), a `worker`, `astrea-host` (permanent service on its own hub port, `hub.device-port`: owns the camera state, receives the Pi's button events and sends `CAMERA_STATE` and `MODEL_PUSH`), and `renderer --mode viewer`.
 2. **Worker B** (second team laptop): `worker` (partial TSDF fusion).
-3. **Raspberry Pi 3**: `holo-io` kernel module exposing `/dev/holo-input` (5 GPIO buttons; optional ZX gesture sensor and `/dev/turntable` later), `device-agent` (Python, mTLS client), a light `worker`, and `renderer --mode hologram` (DRM/GLES2) feeding a Pepper's Ghost display.
+3. **Raspberry Pi 3**: `holo-io` kernel module exposing `/dev/holo-input` (5 GPIO buttons; optional ZX gesture sensor and `/dev/turntable` later), `device-agent` (C, mTLS client), a light `worker`, and `renderer --mode hologram` (DRM/GLES2) feeding a Pepper's Ghost display.
 
 Key cross-cutting rules from the plan:
 
 - **The host is the source of truth for camera state.** It sends `CameraState` (yaw, pitch fixed at 20°, zoom, modelId) to the Pi, and the Pi renders the model it received once. Video is never streamed.
 - **Distributed reconstruction must match single-node output.** The merge is `D = Σ wᵢ·dᵢ / Σ wᵢ` on a fixed common voxel grid.
-- **Wire framing** is `[u32 length][u8 type][msgpack payload]`. The renderer talks to its local Python process over a Unix socket, which has no encryption because it never touches the network.
+- **Wire framing** is `[u32 length][u8 type][msgpack payload]`, done by the C network code. The renderer talks to its local Python process over a Unix socket, which has no encryption because it never touches the network.
 - `/dev/holo-input` is the single input interface for every device. New sources add a `source` value to `struct HoloEvent`, so the agent never needs a new device node.
 - Optional work (motorized turntable, ZX sensor) is phase 8. Its interfaces exist from the start but stay disabled.
 
