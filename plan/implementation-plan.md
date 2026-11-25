@@ -55,7 +55,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
    └─ worker                                            ├─ módulo de kernel holo-io
                                                         │   ├─ /dev/holo-input  (5 botones GPIO; ZX después)
                                                         │   └─ /dev/turntable   (opcional)
-                                                        ├─ device-agent (Python, mTLS)
+                                                        ├─ device-agent (C, mTLS)
                                                         ├─ worker (ligero)
                                                         └─ renderer --mode hologram → HDMI → monitor bajo panel 45°
 ```
@@ -142,7 +142,7 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 ### Plataforma Pi 3: suficiente, con estas notas
 - **SO:** Raspberry Pi OS Lite de 64 bits, sin escritorio, para liberar RAM (1 GB).
 - **Fuente:** 5 V 2.5 A.
-- **Cifrado:** preferir ChaCha20-Poly1305 en TLS. La Pi 3 no tiene aceleración AES; aun así el volumen de datos es bajo.
+- **Cifrado:** ofrecer ChaCha20-Poly1305 primero en TLS (`--prefer-chacha20`). La Pi 3 no tiene aceleración AES; aun así el volumen de datos es bajo.
 - **Render:** 8k triángulos con GLES2 a 720p/1080p es viable. **Se valida en el spike 0c.**
 - **Como worker es lenta:** recibe pocas vistas.
 
@@ -216,7 +216,13 @@ Reset de vista y siguiente modelo no tienen botón: solo existen en el teclado d
 
 ---
 
-## Red y seguridad (`common/`)
+## Red y seguridad (`net/`, en C)
+
+El enunciado del curso exige C o Rust para el driver y la red segura, así que **toda la red está en C** sobre OpenSSL (`net/`). El cómputo (captura, TSDF, mallado) sigue en Python y no abre sockets de red.
+- `libastrea-net.a`: TLS 1.3 con mTLS, framing, el subconjunto de msgpack, `HELLO`, reglas de mensajes, latidos, hub y nodo con reconexión, y el lector de `config.toml`.
+- `astrea-netd`: el demonio de cada nodo. El programa Python lo lanza y le entrega o recibe mensajes completos por un socket Unix local (como el renderer); hay un demonio por enlace (`--link reconstruction` en `hub.port` para los workers y `--link device` en `hub.device-port` para el agente).
+- `astrea-device-agent`: el agente de la Pi, íntegro en C (lee el driver, habla TLS, entrega el estado al renderer e instala los modelos).
+- Se verifican con las pruebas de `tests/unit/` (cliente y nodos Python como sondas externas) y con AddressSanitizer y UndefinedBehaviorSanitizer.
 
 **Transporte**
 - TCP con **TLS 1.3 y autenticación mutua (mTLS)**.
@@ -244,7 +250,8 @@ astrea-view/
   host/coordinator/        # scheduling, TSDF merge, meshing, LOD export, camera state (camera_control)
   worker/                  # partial TSDF fusion
   renderer/                # C + raylib, viewer/hologram modes
-  common/                  # protocol, TLS context, config
+  common/                  # message definitions and validation, config, Python client of astrea-netd
+  net/                     # secure network in C: libastrea-net.a, astrea-netd, astrea-device-agent
   pki/                     # CA + node certs
   hardware/                # ArUco ring generator, 3D-printable plate/coupler (optional)
   tests/                   # synthetic pipeline, protocol, driver tests

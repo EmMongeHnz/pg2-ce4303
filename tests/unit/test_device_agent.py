@@ -1,48 +1,24 @@
-"""DeviceAgentService against a real hub over mutual TLS: input events up, camera state and models down."""
+"""The C device agent (net/build/astrea-device-agent) against a hub over mutual TLS: input events up, camera state and
+models down. The hub is the Python HubServer, which runs the C network daemon."""
 
 import asyncio
+import hashlib
 import os
-import socket
+import signal
 import time
 from pathlib import Path
 
 import pytest
 
-from astrea_common.compression import ZstdCompress
-from astrea_common.config import ClusterConfig, ParseConfig
-from astrea_common.holo_event import EncodeHoloEvent, EventValue, ButtonCode
+from astrea_common.holo_event import ButtonCode, EncodeHoloEvent, EventValue
 from astrea_common.link import HubServer
 from astrea_common.messages import CameraState, Compression, InputEvent, InputSource, ModelPush, Role, SplitModel
+from astrea_common.net_daemon import FindProgram
 from astrea_common.render_link import STATE_STRUCT, DecodeState
-from device_agent.service import DeviceAgentService
+from test_secure_link import FreePort, MakeConfig, WaitUntil
 
-WAIT_S = 5.0
-
-
-def FreePort() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-def MakeConfig(pki, port: int) -> ClusterConfig:
-    table = {
-        "hub": {"node": "host", "address": "127.0.0.1", "port": port, "device-port": FreePort()},
-        "tls": {"ca-file": str(pki.ca), "cert-file": str(pki.directory / "{node}.crt"), "key-file": str(pki.directory / "{node}.key")},
-        "network": {"heartbeat-interval-s": 0.1, "heartbeat-timeout-s": 0.6, "connect-timeout-s": 2.0, "reconnect-initial-s": 0.05, "reconnect-max-s": 0.2},
-        "nodes": {"host": {"roles": ["coordinator"]}, "worker-b": {"roles": ["worker"]}, "pi": {"roles": ["worker", "device-agent"]}},
-    }
-    return ParseConfig(table, Path("/unused"))
-
-
-async def WaitUntil(predicate, timeout: float = WAIT_S):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        await asyncio.sleep(0.02)
-    raise AssertionError("condition not reached in time")
+WAIT_S = 8.0
+AGENT = FindProgram("astrea-device-agent", "ASTREA_DEVICE_AGENT")
 
 
 def ButtonEvent(code: ButtonCode, value: EventValue, timestampNs: int = 1) -> InputEvent:
@@ -50,35 +26,49 @@ def ButtonEvent(code: ButtonCode, value: EventValue, timestampNs: int = 1) -> In
 
 
 class Harness:
-    def __init__(self, pki, tmp_path: Path, withDevice: bool = True) -> None:
-        self.config = MakeConfig(pki, FreePort())
+    def __init__(self, pki, tmp_path: Path, withDevice: bool = True, startHub: bool = True, deviceFirst: bool = True) -> None:
+        self.config = MakeConfig(pki, FreePort(), devicePort=FreePort())
+        self.configFile = tmp_path / "config.toml"
+        self.configFile.write_text(self.config.ToToml())
         self.received: list = []
-        self.hub = HubServer(self.config.ForDeviceLink(), onMessage=self._OnHubMessage)
+        self.hub = HubServer(self.config, onMessage=self._OnHubMessage, link="device")
         self.devicePath = tmp_path / "holo-input"
         self.socketPath = tmp_path / "r.sock"
         self.modelsDir = tmp_path / "models"
-        if withDevice:
+        self.withDevice = withDevice
+        self.startHub = startHub
+        if withDevice and deviceFirst:
             os.mkfifo(self.devicePath)
-        self.agent = DeviceAgentService(self.config, "pi", self.socketPath, self.modelsDir, self.devicePath if withDevice else None)
-        self._runner: asyncio.Task | None = None
+        self.process: asyncio.subprocess.Process | None = None
+        self.logs = ""
 
     async def _OnHubMessage(self, connection, message) -> None:
         self.received.append(message)
 
+    async def StartAgent(self) -> None:
+        command = [str(AGENT), "--config", str(self.configFile), "--name", "pi", "--models-dir", str(self.modelsDir), "--renderer-socket", str(self.socketPath), "--verbose"]
+        command += ["--device", str(self.devicePath)] if self.withDevice else ["--no-device"]
+        self.process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+
     async def __aenter__(self) -> "Harness":
-        await self.hub.Start()
-        self._runner = asyncio.create_task(self.agent.Run())
-        await self.agent.WaitConnected(WAIT_S)
-        await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in self.hub.peers)
+        if self.startHub:
+            await self.hub.Start()
+        await self.StartAgent()
+        if self.startHub:
+            await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in self.hub.peers, WAIT_S)
         return self
 
     async def __aexit__(self, *exc) -> None:
-        await self.agent.Stop()
-        await self._runner
-        await self.hub.Stop()
+        if self.process is not None and self.process.returncode is None:
+            self.process.send_signal(signal.SIGTERM)
+        if self.process is not None:
+            _, errors = await asyncio.wait_for(self.process.communicate(), WAIT_S)
+            self.logs = errors.decode(errors="replace")
+        if self.startHub:
+            await self.hub.Stop()
 
     async def Renderer(self):
-        await WaitUntil(self.socketPath.exists)
+        await WaitUntil(self.socketPath.exists, WAIT_S)
         return await asyncio.open_unix_connection(str(self.socketPath))
 
     async def OpenDeviceWriter(self) -> int:
@@ -99,19 +89,22 @@ async def ReadState(reader: asyncio.StreamReader) -> CameraState:
     return DecodeState(await asyncio.wait_for(reader.readexactly(STATE_STRUCT.size), timeout=WAIT_S))
 
 
+def Inputs(harness: Harness) -> list:
+    return [message for message in harness.received if isinstance(message, InputEvent)]
+
+
 def test_button_events_reach_the_host_unchanged(pki, tmp_path):
     async def scenario():
         async with Harness(pki, tmp_path) as harness:
             writer = await harness.OpenDeviceWriter()
             events = [ButtonEvent(ButtonCode.RIGHT, EventValue.PRESS, 11), ButtonEvent(ButtonCode.RIGHT, EventValue.REPEAT, 12), ButtonEvent(ButtonCode.RIGHT, EventValue.RELEASE, 13)]
             os.write(writer, b"".join(EncodeHoloEvent(event) for event in events))
-            await WaitUntil(lambda: len([m for m in harness.received if isinstance(m, InputEvent)]) == 3)
+            await WaitUntil(lambda: len(Inputs(harness)) == 3, WAIT_S)
             os.close(writer)
-            return events, [m for m in harness.received if isinstance(m, InputEvent)], harness.agent.eventsForwarded
+            return events, Inputs(harness)
 
-    events, received, forwarded = asyncio.run(scenario())
+    events, received = asyncio.run(scenario())
     assert received == events
-    assert forwarded == 3
 
 
 def test_a_record_split_across_two_reads_is_rebuilt(pki, tmp_path):
@@ -120,13 +113,29 @@ def test_a_record_split_across_two_reads_is_rebuilt(pki, tmp_path):
             writer = await harness.OpenDeviceWriter()
             record = EncodeHoloEvent(ButtonEvent(ButtonCode.ZOOM_IN, EventValue.PRESS, 5))
             os.write(writer, record[:7])
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.4)
             os.write(writer, record[7:])
-            await WaitUntil(lambda: any(isinstance(m, InputEvent) for m in harness.received))
+            await WaitUntil(lambda: Inputs(harness), WAIT_S)
             os.close(writer)
-            return [m for m in harness.received if isinstance(m, InputEvent)]
+            return Inputs(harness)
 
     assert asyncio.run(scenario()) == [ButtonEvent(ButtonCode.ZOOM_IN, EventValue.PRESS, 5)]
+
+
+def test_a_burst_of_events_arrives_complete_and_in_order(pki, tmp_path):
+    async def scenario():
+        async with Harness(pki, tmp_path) as harness:
+            writer = await harness.OpenDeviceWriter()
+            events = [ButtonEvent(ButtonCode.LEFT, EventValue.REPEAT, index) for index in range(1, 201)]
+            for start in range(0, len(events), 20):
+                os.write(writer, b"".join(EncodeHoloEvent(event) for event in events[start : start + 20]))
+                await asyncio.sleep(0.01)
+            await WaitUntil(lambda: len(Inputs(harness)) == 200, WAIT_S)
+            os.close(writer)
+            return events, Inputs(harness)
+
+    events, received = asyncio.run(scenario())
+    assert received == events
 
 
 def test_camera_state_goes_to_the_renderer_and_a_new_renderer_gets_the_latest(pki, tmp_path):
@@ -144,13 +153,12 @@ def test_camera_state_goes_to_the_renderer_and_a_new_renderer_gets_the_latest(pk
             return first, second, replay
 
     first, second, replay = asyncio.run(scenario())
-    assert (first.yaw, first.modelId) == (10.0, "cup")
+    assert (first.yaw, first.pitch, first.zoom, first.modelId) == (10.0, 20.0, 1.5, "cup")
     assert second.yaw == 11.0
     assert replay.yaw == 11.0
 
 
-@pytest.mark.parametrize("compression", [Compression.NONE, Compression.ZSTD])
-def test_a_pushed_model_is_installed_and_the_state_is_repeated(pki, tmp_path, compression):
+def test_a_pushed_model_is_installed_and_the_state_is_repeated(pki, tmp_path):
     model = os.urandom(3000) + b"glTF" * 500
 
     async def scenario():
@@ -158,8 +166,7 @@ def test_a_pushed_model_is_installed_and_the_state_is_repeated(pki, tmp_path, co
             reader, writer = await harness.Renderer()
             await harness.SendToAgent(CameraState(0.0, 20.0, 1.0, "bunny"))
             await ReadState(reader)
-            payload = ZstdCompress(model) if compression is Compression.ZSTD else model
-            for chunk in reversed(SplitModel("bunny", payload, compression, chunkBytes=1000)):
+            for chunk in reversed(SplitModel("bunny", model, Compression.NONE, chunkBytes=1000)):
                 await harness.SendToAgent(chunk)
             repeated = await ReadState(reader)
             writer.close()
@@ -171,18 +178,44 @@ def test_a_pushed_model_is_installed_and_the_state_is_repeated(pki, tmp_path, co
     assert files == ["bunny.glb"]
 
 
+def test_a_model_larger_than_one_frame_is_installed(pki, tmp_path):
+    model = os.urandom(2_500_000)
+
+    async def scenario():
+        async with Harness(pki, tmp_path, withDevice=False) as harness:
+            for chunk in SplitModel("big", model, Compression.NONE, chunkBytes=1024 * 1024):
+                await harness.SendToAgent(chunk)
+            await WaitUntil(lambda: (harness.modelsDir / "big.glb").exists(), WAIT_S)
+            return (harness.modelsDir / "big.glb").read_bytes()
+
+    assert asyncio.run(scenario()) == model
+
+
 def test_a_model_with_a_bad_hash_is_not_installed(pki, tmp_path):
     async def scenario():
         async with Harness(pki, tmp_path, withDevice=False) as harness:
-            chunks = SplitModel("bunny", b"x" * 100)
             bad = ModelPush("bunny", 0, 1, 100, "0" * 64, Compression.NONE, b"x" * 100)
             await harness.SendToAgent(bad)
-            for chunk in chunks:
+            for chunk in SplitModel("bunny", b"x" * 100):
                 await harness.SendToAgent(chunk)
-            await WaitUntil(lambda: harness.agent.modelsInstalled == 1)
-            return (harness.modelsDir / "bunny.glb").read_bytes()
+            await WaitUntil(lambda: (harness.modelsDir / "bunny.glb").exists(), WAIT_S)
+            return (harness.modelsDir / "bunny.glb").read_bytes(), sorted(path.name for path in harness.modelsDir.iterdir())
 
-    assert asyncio.run(scenario()) == b"x" * 100
+    content, files = asyncio.run(scenario())
+    assert content == b"x" * 100 and files == ["bunny.glb"]
+
+
+def test_a_compressed_model_is_refused(pki, tmp_path):
+    async def scenario():
+        async with Harness(pki, tmp_path, withDevice=False) as harness:
+            for chunk in SplitModel("packed", b"data", Compression.ZSTD):
+                await harness.SendToAgent(chunk)
+            for chunk in SplitModel("barrier", b"ok"):
+                await harness.SendToAgent(chunk)
+            await WaitUntil(lambda: (harness.modelsDir / "barrier.glb").exists(), WAIT_S)
+            return sorted(path.name for path in harness.modelsDir.iterdir())
+
+    assert asyncio.run(scenario()) == ["barrier.glb"]
 
 
 @pytest.mark.parametrize("modelId", ["../escape", "a/b", ".hidden", "x" * 40, "with space", "ñandú"])
@@ -191,60 +224,79 @@ def test_models_with_unusable_ids_are_ignored(pki, tmp_path, modelId):
         async with Harness(pki, tmp_path, withDevice=False) as harness:
             for chunk in SplitModel(modelId, b"data"):
                 await harness.SendToAgent(chunk)
-            await SplitModelBarrier(harness)
-            return harness.agent.modelsInstalled, list(harness.modelsDir.rglob("*")), list(tmp_path.glob("*.glb"))
+            for chunk in SplitModel("barrier", b"ok"):
+                await harness.SendToAgent(chunk)
+            await WaitUntil(lambda: (harness.modelsDir / "barrier.glb").exists(), WAIT_S)
+            return sorted(path.name for path in harness.modelsDir.rglob("*")), list(tmp_path.glob("*.glb"))
 
-    installed, inside, outside = asyncio.run(scenario())
-    assert installed == 0 and inside == [] and outside == []
+    inside, outside = asyncio.run(scenario())
+    assert inside == ["barrier.glb"] and outside == []
 
 
-async def SplitModelBarrier(harness: Harness) -> None:
-    """A valid model sent afterwards is installed only once the earlier chunks were handled, in order."""
-    for chunk in SplitModel("barrier", b"ok"):
-        await harness.SendToAgent(chunk)
-    await WaitUntil(lambda: (harness.modelsDir / "barrier.glb").exists())
-    (harness.modelsDir / "barrier.glb").unlink()
-    harness.agent.modelsInstalled -= 1
+def test_a_model_larger_than_the_limit_is_ignored(pki, tmp_path):
+    async def scenario():
+        async with Harness(pki, tmp_path, withDevice=False) as harness:
+            huge = ModelPush("huge", 0, 1, 200 * 1024 * 1024, hashlib.sha256(b"").hexdigest(), Compression.NONE, b"")
+            await harness.SendToAgent(huge)
+            for chunk in SplitModel("barrier", b"ok"):
+                await harness.SendToAgent(chunk)
+            await WaitUntil(lambda: (harness.modelsDir / "barrier.glb").exists(), WAIT_S)
+            return sorted(path.name for path in harness.modelsDir.iterdir())
+
+    assert asyncio.run(scenario()) == ["barrier.glb"]
 
 
 def test_events_are_dropped_while_the_host_is_unreachable(pki, tmp_path):
     async def scenario():
-        config = MakeConfig(pki, FreePort())
-        devicePath = tmp_path / "holo-input"
-        os.mkfifo(devicePath)
-        agent = DeviceAgentService(config, "pi", tmp_path / "r.sock", tmp_path / "models", devicePath)
-        runner = asyncio.create_task(agent.Run())
-        try:
-            async def open_writer():
-                while True:
-                    try:
-                        return os.open(devicePath, os.O_WRONLY | os.O_NONBLOCK)
-                    except OSError:
-                        await asyncio.sleep(0.02)
-
-            writer = await asyncio.wait_for(open_writer(), WAIT_S)
+        harness = Harness(pki, tmp_path, startHub=False)
+        async with harness:
+            writer = await harness.OpenDeviceWriter()
             os.write(writer, EncodeHoloEvent(ButtonEvent(ButtonCode.LEFT, EventValue.PRESS)))
-            await WaitUntil(lambda: agent.eventsDropped == 1)
+            await asyncio.sleep(0.5)
             os.close(writer)
-            return agent.eventsForwarded, agent.eventsDropped
-        finally:
-            await agent.Stop()
-            await runner
+        return harness.logs
 
-    assert asyncio.run(scenario()) == (0, 1)
+    logs = asyncio.run(scenario())
+    assert "1 button events dropped so far" in logs
 
 
 def test_the_agent_waits_for_a_device_that_appears_later(pki, tmp_path):
     async def scenario():
-        harness = Harness(pki, tmp_path, withDevice=False)
-        harness.agent = DeviceAgentService(harness.config, "pi", harness.socketPath, harness.modelsDir, harness.devicePath, deviceRetryS=0.05)
-        async with harness:
-            await asyncio.sleep(0.2)
+        async with Harness(pki, tmp_path, deviceFirst=False) as harness:
+            await asyncio.sleep(0.4)
             os.mkfifo(harness.devicePath)
             writer = await harness.OpenDeviceWriter()
             os.write(writer, EncodeHoloEvent(ButtonEvent(ButtonCode.AUTOROTATE, EventValue.PRESS, 9)))
-            await WaitUntil(lambda: any(isinstance(m, InputEvent) for m in harness.received))
+            await WaitUntil(lambda: Inputs(harness), WAIT_S + 4)
             os.close(writer)
-            return [m for m in harness.received if isinstance(m, InputEvent)]
+            return Inputs(harness)
 
     assert asyncio.run(scenario()) == [ButtonEvent(ButtonCode.AUTOROTATE, EventValue.PRESS, 9)]
+
+
+def test_the_agent_reconnects_when_the_hub_restarts(pki, tmp_path):
+    async def scenario():
+        harness = Harness(pki, tmp_path, withDevice=False)
+        async with harness:
+            await harness.hub.Stop()
+            harness.hub = HubServer(harness.config, onMessage=harness._OnHubMessage, link="device")
+            await harness.hub.Start()
+            await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in harness.hub.peers, WAIT_S + 6)
+            reader, writer = await harness.Renderer()
+            await harness.SendToAgent(CameraState(3.0, 20.0, 1.0, "cup"))
+            state = await ReadState(reader)
+            writer.close()
+            return state
+
+    assert asyncio.run(scenario()).yaw == 3.0
+
+
+def test_the_agent_stops_cleanly_on_sigterm_and_removes_its_socket(pki, tmp_path):
+    async def scenario():
+        harness = Harness(pki, tmp_path, withDevice=False)
+        async with harness:
+            await harness.Renderer()
+        return harness.process.returncode, harness.socketPath.exists()
+
+    code, socketLeft = asyncio.run(scenario())
+    assert code == 0 and not socketLeft

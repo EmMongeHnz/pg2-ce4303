@@ -1,53 +1,28 @@
-"""HostService with a real DeviceAgentService over mutual TLS: buttons in, the same camera state out to both viewers."""
+"""HostService with the real C device agent over mutual TLS: buttons in, the same camera state out to both viewers."""
 
 import asyncio
 import os
-import socket
+import signal
 import time
 from pathlib import Path
 
-from astrea_common.config import ClusterConfig, ParseConfig
 from astrea_common.holo_event import ButtonCode, EncodeHoloEvent, EventValue
 from astrea_common.messages import InputEvent, InputSource
-from astrea_common.render_link import STATE_STRUCT, DecodeState
+from astrea_common.net_daemon import FindProgram
+from astrea_common.render_link import STATE_STRUCT, DecodeState, EncodeInput, InputAction, InputKind, RendererInput
 from coordinator.host_service import FindModelIds, HostService
-from device_agent.service import DeviceAgentService
+from test_secure_link import FreePort, MakeConfig, WaitUntil
 
-WAIT_S = 5.0
+WAIT_S = 8.0
 REPEAT_S = 0.05
-
-
-def FreePort() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-def MakeConfig(pki) -> ClusterConfig:
-    table = {
-        "hub": {"node": "host", "address": "127.0.0.1", "port": FreePort(), "device-port": FreePort()},
-        "tls": {"ca-file": str(pki.ca), "cert-file": str(pki.directory / "{node}.crt"), "key-file": str(pki.directory / "{node}.key")},
-        "network": {"heartbeat-interval-s": 0.1, "heartbeat-timeout-s": 0.6, "connect-timeout-s": 2.0, "reconnect-initial-s": 0.05, "reconnect-max-s": 0.2},
-        "nodes": {"host": {"roles": ["coordinator"]}, "worker-b": {"roles": ["worker"]}, "pi": {"roles": ["worker", "device-agent"]}},
-    }
-    return ParseConfig(table, Path("/unused"))
-
-
-async def WaitUntil(predicate, timeout: float = WAIT_S):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        await asyncio.sleep(0.02)
-    raise AssertionError("condition not reached in time")
+AGENT = FindProgram("astrea-device-agent", "ASTREA_DEVICE_AGENT")
 
 
 async def ReadState(reader: asyncio.StreamReader):
     return DecodeState(await asyncio.wait_for(reader.readexactly(STATE_STRUCT.size), timeout=WAIT_S))
 
 
-async def ReadUntil(reader: asyncio.StreamReader, predicate, attempts: int = 600):
+async def ReadUntil(reader: asyncio.StreamReader, predicate, attempts: int = 800):
     for _ in range(attempts):
         state = await ReadState(reader)
         if predicate(state):
@@ -56,10 +31,12 @@ async def ReadUntil(reader: asyncio.StreamReader, predicate, attempts: int = 600
 
 
 class World:
-    """A host service, a Pi agent with a FIFO instead of the driver, and a fake renderer on each side."""
+    """A host service, the C agent of the Pi with a FIFO instead of the driver, and a fake renderer on each side."""
 
     def __init__(self, pki, tmp_path: Path, models: dict[str, bytes]) -> None:
-        self.config = MakeConfig(pki)
+        self.config = MakeConfig(pki, FreePort(), devicePort=FreePort())
+        self.configFile = tmp_path / "config.toml"
+        self.configFile.write_text(self.config.ToToml())
         self.hostModels = tmp_path / "host-models"
         self.hostModels.mkdir()
         for name, data in models.items():
@@ -70,22 +47,29 @@ class World:
         self.device = tmp_path / "holo-input"
         os.mkfifo(self.device)
         self.host = HostService(self.config, self.hostModels, self.hostSocket)
-        self.agent = DeviceAgentService(self.config, "pi", self.piSocket, self.piModels, self.device)
-        self._runner: asyncio.Task | None = None
+        self.agent: asyncio.subprocess.Process | None = None
+
+    async def StartAgent(self) -> None:
+        command = [str(AGENT), "--config", str(self.configFile), "--name", "pi", "--models-dir", str(self.piModels), "--renderer-socket", str(self.piSocket), "--device", str(self.device)]
+        self.agent = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+
+    async def StopAgent(self) -> None:
+        if self.agent is not None and self.agent.returncode is None:
+            self.agent.send_signal(signal.SIGTERM)
+            await asyncio.wait_for(self.agent.wait(), WAIT_S)
 
     async def __aenter__(self) -> "World":
         await self.host.Start()
-        self._runner = asyncio.create_task(self.agent.Run())
-        await self.agent.WaitConnected(WAIT_S)
+        await self.StartAgent()
+        await WaitUntil(lambda: self.host._Agents(), WAIT_S)
         return self
 
     async def __aexit__(self, *exc) -> None:
-        await self.agent.Stop()
-        await self._runner
+        await self.StopAgent()
         await self.host.Stop()
 
     async def Viewer(self, path: Path):
-        await WaitUntil(path.exists)
+        await WaitUntil(path.exists, WAIT_S)
         return await asyncio.open_unix_connection(str(path))
 
     async def OpenDevice(self) -> int:
@@ -117,8 +101,8 @@ def test_a_held_button_turns_both_viewers_to_the_same_yaw(pki, tmp_path):
             piReader, piWriter = await world.Viewer(world.piSocket)
             descriptor = await world.OpenDevice()
             await world.HoldButton(descriptor, ButtonCode.RIGHT, 0.4)
-            await WaitUntil(lambda: world.host.eventsReceived >= 3)
-            await asyncio.sleep(0.6)
+            await WaitUntil(lambda: world.host.eventsReceived >= 3, WAIT_S)
+            await asyncio.sleep(0.8)
             final = world.host.control.Snapshot()
             hostState = await ReadUntil(hostReader, lambda state: abs(state.yaw - final.yaw) < 1e-3)
             piState = await ReadUntil(piReader, lambda state: abs(state.yaw - final.yaw) < 1e-3)
@@ -134,8 +118,6 @@ def test_a_held_button_turns_both_viewers_to_the_same_yaw(pki, tmp_path):
 
 
 def test_keyboard_input_of_the_host_viewer_also_reaches_the_pi(pki, tmp_path):
-    from astrea_common.render_link import EncodeInput, InputAction, InputKind, RendererInput
-
     async def scenario():
         async with World(pki, tmp_path, {}) as world:
             piReader, piWriter = await world.Viewer(world.piSocket)
@@ -158,7 +140,7 @@ def test_zoom_and_auto_rotation_buttons_change_the_shared_state(pki, tmp_path):
             zoomed = await ReadUntil(piReader, lambda state: state.zoom > 1.1)
             os.write(descriptor, EncodeHoloEvent(InputEvent(InputSource.JOYSTICK, ButtonCode.AUTOROTATE, EventValue.PRESS, 1)))
             os.write(descriptor, EncodeHoloEvent(InputEvent(InputSource.JOYSTICK, ButtonCode.AUTOROTATE, EventValue.RELEASE, 2)))
-            await WaitUntil(lambda: world.host.control.autoRotate)
+            await WaitUntil(lambda: world.host.control.autoRotate, WAIT_S)
             os.close(descriptor)
             piWriter.close()
             return zoomed
@@ -173,10 +155,10 @@ def test_models_are_pushed_to_the_pi_when_its_agent_connects(pki, tmp_path):
     async def scenario():
         async with World(pki, tmp_path, {"cup": cup, "bunny": bunny}) as world:
             piReader, piWriter = await world.Viewer(world.piSocket)
-            await WaitUntil(lambda: world.agent.modelsInstalled == 2)
+            await WaitUntil(lambda: {path.name for path in world.piModels.glob("*.glb")} == {"cup.glb", "bunny.glb"}, WAIT_S)
             state = await ReadUntil(piReader, lambda state: state.modelId == "bunny")
             piWriter.close()
-            return state, {path.name: path.read_bytes() for path in world.piModels.iterdir()}, world.host.modelsPushed
+            return state, {path.name: path.read_bytes() for path in world.piModels.glob("*.glb")}, world.host.modelsPushed
 
     state, installed, pushed = asyncio.run(scenario())
     assert installed == {"cup.glb": cup, "bunny.glb": bunny}
@@ -185,8 +167,6 @@ def test_models_are_pushed_to_the_pi_when_its_agent_connects(pki, tmp_path):
 
 
 def test_next_model_changes_the_model_on_both_viewers(pki, tmp_path):
-    from astrea_common.render_link import EncodeInput, InputAction, InputKind, RendererInput
-
     async def scenario():
         async with World(pki, tmp_path, {"a": b"1", "b": b"2"}) as world:
             hostReader, hostWriter = await world.Viewer(world.hostSocket)
@@ -210,10 +190,10 @@ def test_losing_the_pi_while_a_button_is_held_stops_the_motion(pki, tmp_path):
         async with world:
             descriptor = await world.OpenDevice()
             os.write(descriptor, EncodeHoloEvent(InputEvent(InputSource.JOYSTICK, ButtonCode.RIGHT, EventValue.PRESS, 1)))
-            await WaitUntil(lambda: world.host.eventsReceived == 1)
-            await world.agent.Stop()
-            await WaitUntil(lambda: not world.host._Agents())
-            await asyncio.sleep(0.1)
+            await WaitUntil(lambda: world.host.eventsReceived == 1, WAIT_S)
+            await world.StopAgent()
+            await WaitUntil(lambda: not world.host._Agents(), WAIT_S)
+            await asyncio.sleep(0.2)
             frozen = world.host.control.Snapshot().yaw
             await asyncio.sleep(0.2)
             os.close(descriptor)

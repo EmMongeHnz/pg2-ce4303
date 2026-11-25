@@ -1,44 +1,44 @@
-"""Secure links between the hub (host PC) and the other nodes.
+"""Secure links between the hub (host PC) and the other nodes, as seen from Python.
 
-`HubServer` accepts mutual-TLS connections and `NodeClient` dials the hub with reconnection. Both ends run
-the same `Connection`: a `HELLO` exchange that binds the declared node and role to the certificate and to
-`config.toml`, then a receive loop that enforces the direction rules of `astrea_common.messages`, a
-periodic `HEARTBEAT` (the peer echoes it, which gives the round-trip time) and a watchdog that closes
-the link when no bytes arrived for `heartbeat-timeout-s`. Liveness counts every received chunk, not only
-complete frames, so a large frame on a slow link does not look like a dead peer.
+The TLS 1.3 handshake with mutual authentication, the framing, the `HELLO` exchange, the message rules, the
+heartbeats and the reconnection all run in the C daemon `astrea-netd` (see `net/`); this module only starts it and
+exchanges whole messages with it. `HubServer` and `NodeClient` keep the interface the workers, the coordinator and
+the host service were written against, and `Connection` is one established link.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import ssl
-import time
+import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from astrea_common.config import ClusterConfig, NetworkSettings
-from astrea_common.framing import Frame, FrameDecoder, ProtocolError, ReadFrame, WriteFrame
-from astrea_common.messages import (
-    PROTOCOL_VERSION,
-    Heartbeat,
-    Hello,
-    IsAllowed,
-    Message,
-    MessageType,
-    Role,
-    DecodeMessage,
+import msgpack
+
+from astrea_common.config import ClusterConfig
+from astrea_common.framing import MAX_FRAME_BYTES, Frame, FrameTooLarge, ProtocolError
+from astrea_common.messages import DecodeMessage, IsAllowed, Message, MessageType, Role
+from astrea_common.net_daemon import (
+    CMD_CLOSE,
+    CMD_SEND,
+    EV_DETACHED,
+    EV_FATAL,
+    EV_MESSAGE,
+    EV_PEER_DOWN,
+    EV_PEER_UP,
+    EV_REJECT,
+    EV_RTT,
+    DaemonSession,
 )
-from astrea_common.tls import ClientContextFor, DescribeSession, PeerIdentityError, PeerNodeName, ServerContextFor
 
 LOG = logging.getLogger("astrea.link")
-WATCHDOG_CHECKS_PER_TIMEOUT = 4
-RECEIVE_CHUNK_BYTES = 64 * 1024
-NS_PER_MS = 1_000_000
 
 MessageHandler = Callable[["Connection", Message], Awaitable[None]]
 PeerHandler = Callable[["Connection"], Awaitable[None]]
 LostHandler = Callable[["Connection", str], Awaitable[None]]
+
+_ID = struct.Struct(">I")
 
 
 class HandshakeRejected(ProtocolError):
@@ -57,39 +57,24 @@ class PeerInfo:
 
 
 class Connection:
-    """An established link, from either side. Create it with `AcceptPeer` (hub) or `DialHub` (node)."""
+    """An established link, from either side. Created from the daemon's `PEER_UP` event."""
 
-    def __init__(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        peer: PeerInfo,
-        localIsHub: bool,
-        nodeRole: Role,
-        settings: NetworkSettings,
-        onMessage: MessageHandler | None,
-    ) -> None:
+    def __init__(self, session: DaemonSession, peerId: int, peer: PeerInfo, localIsHub: bool, nodeRole: Role) -> None:
         self.peer = peer
         self.rttMs: float | None = None
         self.closeReason: str | None = None
-        self._reader = reader
-        self._writer = writer
+        self._session = session
+        self._peerId = peerId
         self._localIsHub = localIsHub
         self._nodeRole = nodeRole
-        self._settings = settings
-        self._onMessage = onMessage
         self._closed = asyncio.Event()
-        self._sendLock = asyncio.Lock()
-        self._lastHeardNs = time.monotonic_ns()
-        self._sequence = 0
-        self._tasks: list[asyncio.Task] = []
 
     @property
     def isOpen(self) -> bool:
         return not self._closed.is_set()
 
     def Start(self) -> None:
-        self._tasks = [asyncio.create_task(loop()) for loop in (self._ReceiveLoop, self._HeartbeatLoop, self._WatchdogLoop)]
+        """Kept for the callers that start a link explicitly; the daemon already runs it."""
 
     async def Wait(self) -> None:
         await self._closed.wait()
@@ -100,142 +85,68 @@ class Connection:
             raise MessageNotAllowed(f"{messageType.name} is managed by the link itself")
         if not IsAllowed(messageType, self._localIsHub, self._nodeRole):
             raise MessageNotAllowed(f"{messageType.name} cannot be sent to {self.peer.node} ({self.peer.role.value})")
-        await self._SendUnchecked(message)
+        if not self.isOpen:
+            raise ConnectionError(f"the link to {self.peer.node} is closed")
+        payload = msgpack.packb(message.ToPayload(), use_bin_type=True)
+        if len(payload) + 1 > MAX_FRAME_BYTES:
+            raise FrameTooLarge(f"a frame of {len(payload) + 1} bytes exceeds the {MAX_FRAME_BYTES} byte limit")
+        await self._session.Command(CMD_SEND, _ID.pack(self._peerId) + bytes([int(messageType)]) + payload)
 
     async def Close(self, reason: str = "closed locally") -> None:
+        if not self.isOpen:
+            return
+        self.MarkClosed(reason)
+        try:
+            await self._session.Command(CMD_CLOSE, _ID.pack(self._peerId) + reason.encode())
+        except ConnectionError:
+            pass
+
+    def MarkClosed(self, reason: str) -> None:
         if self._closed.is_set():
             return
         self.closeReason = reason
         self._closed.set()
-        current = asyncio.current_task()
-        for task in self._tasks:
-            if task is not current:
-                task.cancel()
-        self._writer.close()
-        try:
-            await self._writer.wait_closed()
-        except (OSError, ssl.SSLError):
-            pass
-
-    async def _SendUnchecked(self, message: Message) -> None:
-        async with self._sendLock:
-            await WriteFrame(self._writer, int(message.MESSAGE_TYPE), message.ToPayload())
-
-    async def _ReceiveLoop(self) -> None:
-        reason = "receive loop ended"
-        decoder = FrameDecoder()
-        try:
-            while True:
-                data = await self._reader.read(RECEIVE_CHUNK_BYTES)
-                if not data:
-                    decoder.Finish()
-                    reason = "peer closed the connection"
-                    break
-                self._lastHeardNs = time.monotonic_ns()
-                for frame in decoder.Feed(data):
-                    await self._Dispatch(DecodeMessage(frame))
-        except asyncio.CancelledError:
-            raise
-        except ProtocolError as error:
-            reason = f"protocol error: {error}"
-        except (OSError, ssl.SSLError) as error:
-            reason = f"connection error: {error}"
-        except Exception as error:
-            LOG.exception("handler for %s failed", self.peer.node)
-            reason = f"handler failed: {error}"
-        await self.Close(reason)
-
-    async def _Dispatch(self, message: Message) -> None:
-        messageType = message.MESSAGE_TYPE
-        if messageType is MessageType.HELLO:
-            raise ProtocolError("HELLO is only valid at the start of a connection")
-        if not IsAllowed(messageType, not self._localIsHub, self._nodeRole):
-            raise MessageNotAllowed(f"{messageType.name} is not allowed from {self.peer.node} ({self.peer.role.value})")
-        if isinstance(message, Heartbeat):
-            await self._OnHeartbeat(message)
-        elif self._onMessage is not None:
-            await self._onMessage(self, message)
-
-    async def _OnHeartbeat(self, heartbeat: Heartbeat) -> None:
-        if not heartbeat.echo:
-            await self._SendUnchecked(Heartbeat(heartbeat.sequence, heartbeat.sentAtNs, echo=True))
-            return
-        elapsedNs = time.monotonic_ns() - heartbeat.sentAtNs
-        if elapsedNs >= 0:
-            self.rttMs = elapsedNs / NS_PER_MS
-
-    async def _HeartbeatLoop(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(self._settings.heartbeatIntervalS)
-                self._sequence += 1
-                await self._SendUnchecked(Heartbeat(self._sequence, time.monotonic_ns()))
-        except asyncio.CancelledError:
-            raise
-        except (OSError, ssl.SSLError) as error:
-            await self.Close(f"connection error: {error}")
-
-    async def _WatchdogLoop(self) -> None:
-        timeoutNs = int(self._settings.heartbeatTimeoutS * 1e9)
-        period = self._settings.heartbeatTimeoutS / WATCHDOG_CHECKS_PER_TIMEOUT
-        while True:
-            await asyncio.sleep(period)
-            if time.monotonic_ns() - self._lastHeardNs > timeoutNs:
-                await self.Close("heartbeat timeout")
-                return
 
 
-def _ExpectHello(frame: Frame | None, who: str) -> Hello:
-    if frame is None:
-        raise HandshakeRejected(f"{who} closed the connection before sending HELLO")
-    if frame.messageType != MessageType.HELLO:
-        raise HandshakeRejected(f"{who} sent message type {frame.messageType} instead of HELLO")
-    hello = DecodeMessage(frame)
-    assert isinstance(hello, Hello)
-    if hello.protocolVersion != PROTOCOL_VERSION:
-        raise HandshakeRejected(f"{who} speaks protocol {hello.protocolVersion}, this node speaks {PROTOCOL_VERSION}")
-    return hello
+def _ParsePeerUp(body: bytes) -> tuple[int, PeerInfo]:
+    (peerId,) = _ID.unpack_from(body, 0)
+    position = 4
+    nodeLength = body[position]
+    node = body[position + 1 : position + 1 + nodeLength].decode()
+    position += 1 + nodeLength
+    roleLength = body[position]
+    role = Role(body[position + 1 : position + 1 + roleLength].decode())
+    position += 1 + roleLength
+    (sessionLength,) = struct.unpack_from(">H", body, position)
+    session = body[position + 2 : position + 2 + sessionLength].decode()
+    return peerId, PeerInfo(node, role, session)
 
 
-async def AcceptPeer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, config: ClusterConfig, onMessage: MessageHandler | None) -> Connection:
-    """Hub side of the handshake; raises if the peer is not who its certificate and the configuration say."""
-    sslObject = writer.get_extra_info("ssl_object")
-    certificateName = PeerNodeName(sslObject)
-    hello = _ExpectHello(await asyncio.wait_for(ReadFrame(reader), config.network.connectTimeoutS), certificateName)
-    if hello.node != certificateName:
-        raise HandshakeRejected(f"certificate says '{certificateName}' but HELLO says '{hello.node}'")
-    allowedRoles = config.Node(certificateName).roles if certificateName in config.nodes else frozenset()
-    if hello.role == Role.COORDINATOR or hello.role not in allowedRoles:
-        raise HandshakeRejected(f"node '{certificateName}' is not allowed to connect as '{hello.role.value}'")
-    await WriteFrame(writer, int(MessageType.HELLO), Hello(PROTOCOL_VERSION, config.hub.node, Role.COORDINATOR).ToPayload())
-    return Connection(reader, writer, PeerInfo(hello.node, hello.role, DescribeSession(sslObject)), True, hello.role, config.network, onMessage)
-
-
-async def DialHub(config: ClusterConfig, nodeName: str, role: Role, onMessage: MessageHandler | None = None, sslContext: ssl.SSLContext | None = None) -> Connection:
-    """One connection attempt from a node to the hub; the caller owns retries (see `NodeClient`)."""
-    if role not in config.Node(nodeName).roles:
-        raise HandshakeRejected(f"node '{nodeName}' is not configured with role '{role.value}'")
-    context = sslContext or ClientContextFor(config, nodeName)
-    timeout = config.network.connectTimeoutS
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_connection(config.hub.address, config.hub.port, ssl=context, server_hostname=config.hub.node, ssl_handshake_timeout=timeout),
-        timeout,
-    )
+async def _DeliverMessage(connection: Connection, body: bytes, onMessage: MessageHandler | None) -> None:
+    messageType = body[4]
     try:
-        sslObject = writer.get_extra_info("ssl_object")
-        hubName = PeerNodeName(sslObject)
-        await WriteFrame(writer, int(MessageType.HELLO), Hello(PROTOCOL_VERSION, nodeName, role).ToPayload())
-        hello = _ExpectHello(await asyncio.wait_for(ReadFrame(reader), timeout), "the hub")
-        if hello.node != hubName or hello.node != config.hub.node or hello.role != Role.COORDINATOR:
-            raise HandshakeRejected(f"unexpected hub identity '{hello.node}' as '{hello.role.value}'")
-    except BaseException:
-        writer.close()
+        message = DecodeMessage(Frame(messageType, msgpack.unpackb(body[5:], raw=False)))
+    except (ProtocolError, ValueError, msgpack.exceptions.ExtraData, msgpack.exceptions.UnpackException) as error:
+        LOG.warning("closing %s: %s", connection.peer.node, error)
+        await connection.Close(f"protocol error: {error}")
+        return
+    if onMessage is None:
+        return
+    try:
+        await onMessage(connection, message)
+    except asyncio.CancelledError:
         raise
-    return Connection(reader, writer, PeerInfo(hello.node, hello.role, DescribeSession(sslObject)), False, role, config.network, onMessage)
+    except Exception as error:
+        LOG.exception("handler for %s failed", connection.peer.node)
+        await connection.Close(f"handler failed: {error}")
 
 
 class HubServer:
-    """Listens for nodes, keeps one live connection per (node, role) and reports arrivals and losses."""
+    """Runs the hub side in a daemon, keeps one live connection per (node, role) and reports arrivals and losses.
+
+    `link` picks the port: "reconstruction" listens on `hub.port` (the workers) and "device" on `hub.device-port`
+    (the device agent), so both services can run at once.
+    """
 
     def __init__(
         self,
@@ -243,34 +154,30 @@ class HubServer:
         onMessage: MessageHandler | None = None,
         onPeerConnected: PeerHandler | None = None,
         onPeerLost: LostHandler | None = None,
-        sslContext: ssl.SSLContext | None = None,
+        link: str = "reconstruction",
     ) -> None:
         self.config = config
         self.rejections: list[str] = []
         self._onMessage = onMessage
         self._onPeerConnected = onPeerConnected
         self._onPeerLost = onPeerLost
-        self._sslContext = sslContext
-        self._server: asyncio.Server | None = None
+        self._session = DaemonSession(config, ["--mode", "hub", "--link", link], self._OnEvent)
         self._peers: dict[tuple[str, Role], Connection] = {}
+        self._byId: dict[int, Connection] = {}
 
     @property
     def peers(self) -> dict[tuple[str, Role], Connection]:
         return dict(self._peers)
 
     async def Start(self) -> None:
-        context = self._sslContext or ServerContextFor(self.config, self.config.hub.node)
-        self._server = await asyncio.start_server(
-            self._OnClient, self.config.hub.bindAddress, self.config.hub.port, ssl=context, ssl_handshake_timeout=self.config.network.connectTimeoutS
-        )
+        await self._session.Start()
 
     async def Stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-        for connection in list(self._peers.values()):
-            await connection.Close("hub stopped")
-        if self._server is not None:
-            await self._server.wait_closed()
+        await self._session.Stop()
+        for connection in list(self._byId.values()):
+            connection.MarkClosed("hub stopped")
+        self._peers.clear()
+        self._byId.clear()
 
     async def Send(self, node: str, role: Role, message: Message) -> None:
         connection = self._peers.get((node, role))
@@ -278,33 +185,48 @@ class HubServer:
             raise ConnectionError(f"{node} ({role.value}) is not connected")
         await connection.Send(message)
 
-    async def _OnClient(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            connection = await AcceptPeer(reader, writer, self.config, self._onMessage)
-        except (ProtocolError, PeerIdentityError, asyncio.TimeoutError, OSError, ssl.SSLError) as error:
-            self._Reject(str(error) or type(error).__name__)
-            writer.close()
-            return
-        await self._Register(connection)
-        connection.Start()
-        await connection.Wait()
-        await self._Unregister(connection)
+    async def _OnEvent(self, kind: int, body: bytes) -> None:
+        if kind == EV_PEER_UP:
+            await self._PeerUp(body)
+        elif kind == EV_PEER_DOWN:
+            await self._PeerDown(body)
+        elif kind == EV_MESSAGE:
+            connection = self._byId.get(_ID.unpack_from(body, 0)[0])
+            if connection is not None and connection.isOpen:
+                await _DeliverMessage(connection, body, self._onMessage)
+        elif kind == EV_RTT:
+            connection = self._byId.get(_ID.unpack_from(body, 0)[0])
+            if connection is not None:
+                connection.rttMs = _ID.unpack_from(body, 4)[0] / 1000.0
+        elif kind == EV_REJECT:
+            reason = body.decode(errors="replace")
+            LOG.warning("rejected connection: %s", reason)
+            self.rejections.append(reason)
+        elif kind == EV_FATAL:
+            LOG.error("network daemon: %s", body.decode(errors="replace"))
+        elif kind == EV_DETACHED:
+            LOG.error("the network daemon of the hub stopped")
 
-    def _Reject(self, reason: str) -> None:
-        LOG.warning("rejected connection: %s", reason)
-        self.rejections.append(reason)
-
-    async def _Register(self, connection: Connection) -> None:
-        key = (connection.peer.node, connection.peer.role)
+    async def _PeerUp(self, body: bytes) -> None:
+        peerId, peer = _ParsePeerUp(body)
+        connection = Connection(self._session, peerId, peer, True, peer.role)
+        key = (peer.node, peer.role)
         previous = self._peers.get(key)
         self._peers[key] = connection
+        self._byId[peerId] = connection
         if previous is not None:
-            await previous.Close("replaced by a newer connection")
-        LOG.info("%s (%s) connected over %s", connection.peer.node, connection.peer.role.value, connection.peer.session)
+            previous.MarkClosed("replaced by a newer connection")
+        LOG.info("%s (%s) connected over %s", peer.node, peer.role.value, peer.session)
         if self._onPeerConnected is not None:
             await self._onPeerConnected(connection)
 
-    async def _Unregister(self, connection: Connection) -> None:
+    async def _PeerDown(self, body: bytes) -> None:
+        peerId = _ID.unpack_from(body, 0)[0]
+        reason = body[4:].decode(errors="replace")
+        connection = self._byId.pop(peerId, None)
+        if connection is None:
+            return
+        connection.MarkClosed(reason)
         key = (connection.peer.node, connection.peer.role)
         if self._peers.get(key) is connection:
             del self._peers[key]
@@ -314,7 +236,7 @@ class HubServer:
 
 
 class NodeClient:
-    """Keeps a link to the hub alive: dials, waits until it drops, and retries with exponential backoff."""
+    """Keeps a link to the hub alive: the daemon dials, waits until it drops and retries with exponential backoff."""
 
     def __init__(
         self,
@@ -324,7 +246,7 @@ class NodeClient:
         onMessage: MessageHandler | None = None,
         onConnected: PeerHandler | None = None,
         onDisconnected: LostHandler | None = None,
-        sslContext: ssl.SSLContext | None = None,
+        preferChacha: bool = False,
     ) -> None:
         self.config = config
         self.nodeName = nodeName
@@ -333,9 +255,13 @@ class NodeClient:
         self._onMessage = onMessage
         self._onConnected = onConnected
         self._onDisconnected = onDisconnected
-        self._sslContext = sslContext
+        arguments = ["--mode", "node", "--name", nodeName, "--role", role.value]
+        if preferChacha:
+            arguments.append("--prefer-chacha20")
+        self._session = DaemonSession(config, arguments, self._OnEvent)
         self._stop = asyncio.Event()
         self._connected = asyncio.Event()
+        self._byId: dict[int, Connection] = {}
 
     async def WaitConnected(self, timeout: float) -> Connection:
         await asyncio.wait_for(self._connected.wait(), timeout)
@@ -344,38 +270,45 @@ class NodeClient:
 
     async def Stop(self) -> None:
         self._stop.set()
-        if self.connection is not None:
-            await self.connection.Close("node stopped")
 
     async def Run(self) -> None:
-        settings = self.config.network
-        delay = settings.reconnectInitialS
-        while not self._stop.is_set():
-            try:
-                connection = await DialHub(self.config, self.nodeName, self.role, self._onMessage, self._sslContext)
-            except (ProtocolError, PeerIdentityError, asyncio.TimeoutError, OSError, ssl.SSLError) as error:
-                LOG.warning("%s could not reach the hub: %s", self.nodeName, str(error) or type(error).__name__)
-                await self._SleepUnlessStopped(delay)
-                delay = min(delay * 2, settings.reconnectMaxS)
-                continue
-            delay = settings.reconnectInitialS
-            await self._Serve(connection)
-            await self._SleepUnlessStopped(delay)
-
-    async def _Serve(self, connection: Connection) -> None:
-        self.connection = connection
-        connection.Start()
-        self._connected.set()
-        if self._onConnected is not None:
-            await self._onConnected(connection)
-        await connection.Wait()
-        self._connected.clear()
-        self.connection = None
-        if self._onDisconnected is not None:
-            await self._onDisconnected(connection, connection.closeReason or "closed")
-
-    async def _SleepUnlessStopped(self, seconds: float) -> None:
+        await self._session.Start()
         try:
-            await asyncio.wait_for(self._stop.wait(), seconds)
-        except asyncio.TimeoutError:
-            pass
+            await self._stop.wait()
+        finally:
+            if self.connection is not None:
+                self.connection.MarkClosed("node stopped")
+            await self._session.Stop()
+            self._connected.clear()
+            self.connection = None
+
+    async def _OnEvent(self, kind: int, body: bytes) -> None:
+        if kind == EV_PEER_UP:
+            peerId, peer = _ParsePeerUp(body)
+            connection = Connection(self._session, peerId, peer, False, self.role)
+            self._byId[peerId] = connection
+            self.connection = connection
+            self._connected.set()
+            if self._onConnected is not None:
+                await self._onConnected(connection)
+        elif kind == EV_PEER_DOWN:
+            connection = self._byId.pop(_ID.unpack_from(body, 0)[0], None)
+            if connection is None:
+                return
+            connection.MarkClosed(body[4:].decode(errors="replace"))
+            if self.connection is connection:
+                self.connection = None
+                self._connected.clear()
+            if self._onDisconnected is not None:
+                await self._onDisconnected(connection, connection.closeReason or "closed")
+        elif kind == EV_MESSAGE:
+            connection = self._byId.get(_ID.unpack_from(body, 0)[0])
+            if connection is not None and connection.isOpen:
+                await _DeliverMessage(connection, body, self._onMessage)
+        elif kind == EV_RTT:
+            connection = self._byId.get(_ID.unpack_from(body, 0)[0])
+            if connection is not None:
+                connection.rttMs = _ID.unpack_from(body, 4)[0] / 1000.0
+        elif kind == EV_DETACHED and not self._stop.is_set():
+            LOG.error("the network daemon of %s stopped", self.nodeName)
+            self._stop.set()

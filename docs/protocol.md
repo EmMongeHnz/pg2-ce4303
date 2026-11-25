@@ -1,6 +1,6 @@
 # Protocolo de red de AstreaView
 
-Especificación del transporte seguro y de los mensajes entre los nodos (M2). La implementación está en `common/src/astrea_common/` (`framing.py`, `messages.py`, `tls.py`, `config.py`, `link.py`) y la verificación en `astrea-net-check`.
+Especificación del transporte seguro y de los mensajes entre los nodos (M2). **Toda la red segura está implementada en C** (`net/`, sobre OpenSSL): `astrea-netd`, el demonio de red de cada nodo, y `astrea-device-agent`, el agente de la Pi, comparten la biblioteca estática `libastrea-net.a` (TLS 1.3 con autenticación mutua, framing, `HELLO`, reglas de mensajes, latidos y reconexión). Los programas Python (workers, coordinador, `astrea-host`) no abren sockets de red: arrancan el demonio y le entregan o reciben mensajes completos por un socket Unix local (sección 5, «Demonio de red»). Los mensajes y sus campos se definen y validan en `common/src/astrea_common/messages.py`, y la verificación está en `astrea-net-check` y en las pruebas de `tests/unit/`.
 
 ## 1. Topología
 
@@ -21,7 +21,8 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 - Intercambio de claves efímero (ECDHE), con *forward secrecy*.
 - **Identidad del hub:** el cliente verifica el certificado del servidor contra el nombre del hub (`hub.node`), aunque se conecte por IP. Un certificado de otro nodo no se acepta como hub.
 - **Identidad del cliente:** el hub lee el nombre del SAN del certificado y exige que coincida con el `node` de `HELLO` y que el rol esté permitido para ese nodo en `config.toml`.
-- **Cifrado:** los tres suites TLS 1.3 son AEAD. Python no permite elegir suites de TLS 1.3; para que un proceso use solo ChaCha20-Poly1305 (la Pi 3 no tiene aceleración AES) se lanza con `OPENSSL_CONF=pki/openssl-chacha20.cnf`.
+- **Cifrado:** los tres suites TLS 1.3 son AEAD. Por defecto el nodo ofrece `TLS_AES_256_GCM_SHA384` primero; con `--prefer-chacha20` (la Pi 3 no tiene aceleración AES) ofrece `TLS_CHACHA20_POLY1305_SHA256` primero y es el que se negocia, porque el servidor sigue la preferencia del cliente.
+- **Identidad única:** el certificado debe llevar **un solo** nombre DNS; uno que nombre a varios nodos se rechaza como identidad ambigua.
 - El socket Unix entre el proceso Python local y el renderer no sale de la máquina y no usa TLS (formato en la sección 5, «Socket Unix del renderer»).
 
 ## 3. Framing
@@ -105,6 +106,26 @@ No viaja por la red: es el contrato local entre `holo-io` y el agente, que reenv
 - **Criterio «N pulsaciones = N eventos»:** se cuenta en eventos `PRESS`. Con el botón de autorrotación, que no repite, `presses` aumenta en N, el lector ve N `PRESS` y `dropped` no cambia (`driver/holo-io/check-presses.sh`).
 - **Acceso:** la regla udev `99-holo-io.rules` deja el nodo en el grupo `input` con modo 0660.
 
+### Demonio de red (local, entre el programa Python y `astrea-netd`)
+
+No viaja por la red. `astrea-netd --mode hub|node` hace toda la red cifrada y habla con el programa local por un socket Unix (permisos 0600) con marcos `[u32 longitud][u8 tipo][cuerpo]` en big-endian. El cliente local es uno solo; si se conecta otro, reemplaza al anterior y recibe de nuevo los enlaces activos.
+
+| Del demonio al programa | Cuerpo |
+|---|---|
+| 1 `PEER_UP` | `id` u32, nodo (u8 + texto), rol (u8 + texto), sesión TLS (u16 + texto) |
+| 2 `PEER_DOWN` | `id` u32, motivo |
+| 3 `MESSAGE` | `id` u32, tipo u8, carga msgpack tal como llegó |
+| 4 `RTT` | `id` u32, microsegundos u32 |
+| 5 `REJECT` / 6 `FATAL` | texto |
+
+| Del programa al demonio | Cuerpo |
+|---|---|
+| 1 `SEND` | `id` u32 (0 = el único enlace de un nodo), tipo u8, carga msgpack |
+| 2 `CLOSE` | `id` u32, motivo |
+| 3 `SHUTDOWN` | — |
+
+El demonio aplica en el cable todo lo de las secciones 3, 4 y 6: tope de 4 MiB por trama, tipos válidos, carga msgpack bien formada, reglas de quién envía qué, `HELLO` solo al inicio, latidos y corte por silencio. `HEARTBEAT` y `HELLO` nunca llegan al programa. Hay un demonio por enlace: `--link reconstruction` escucha en `hub.port` y `--link device` en `hub.device-port`; un nodo con un rol usa el puerto de ese rol. Con `--exit-on-detach` el demonio termina cuando el programa se desconecta. El programa Python que lo lanza escribe un `config.toml` temporal con rutas absolutas.
+
 ### Socket Unix del renderer (local, no viaja por la red)
 
 Contrato entre el proceso Python de una máquina y su `renderer` (`--control-socket <ruta>`). El proceso Python escucha, el renderer se conecta como cliente y reintenta cada 0.5 s. Es un flujo de registros binarios de tamaño fijo, en el orden de bytes de la máquina (little-endian en la Pi 3 y en x86). Fuentes de verdad: `renderer/src/control-protocol.h` y su espejo `astrea_common.render_link`, comparados por `tests/unit/test_render_link.py`.
@@ -133,7 +154,7 @@ Contrato entre el proceso Python de una máquina y su `renderer` (`--control-soc
 
 - **`INPUT_EVENT`:** cada registro de `/dev/holo-input` se envía tal cual (`source`, `code`, `value`, `timestampNs` de la Pi). El agente no interpreta los botones: el host los convierte en acciones de cámara. Con el enlace caído los eventos se descartan.
 - **`CAMERA_STATE`:** se entrega al renderer local como `ControlState`. El agente guarda el último y se lo envía a un renderer que se conecta o se reconecta.
-- **`MODEL_PUSH`:** un modelo es válido si el id cumple `[A-Za-z0-9_-][A-Za-z0-9_.-]*` con 31 bytes como máximo, `totalSize` ≤ 128 MiB y el SHA-256 de lo transmitido coincide. Si `compression = zstd` se descomprime con tope de tamaño. Se instala como `<models-dir>/<modelId>.glb` (archivo temporal más `rename`, así el renderer nunca ve un archivo a medias). Si un modelo no pasa las comprobaciones se descarta y se registra. Una transferencia nueva del mismo id reemplaza a una incompleta.
+- **`MODEL_PUSH`:** un modelo es válido si el id cumple `[A-Za-z0-9_-][A-Za-z0-9_.-]*` con 31 bytes como máximo, `totalSize` ≤ 128 MiB, `compression = none` y el SHA-256 de lo transmitido coincide. El agente en C no descomprime zstd: un modelo con otra compresión se rechaza y se registra. Se instala como `<models-dir>/<modelId>.glb` (archivo temporal más `rename`, así el renderer nunca ve un archivo a medias). Una transferencia nueva del mismo id reemplaza a una incompleta, y los trozos pueden llegar en cualquier orden.
 - **Tras instalar un modelo** el agente reenvía el último `CAMERA_STATE` si ese estado nombra el modelo, porque el renderer solo reintenta cargar cuando recibe un estado.
 
 ### Trabajos de reconstrucción (N1)
@@ -208,7 +229,7 @@ Esto es lo único de M2 que falta ejecutar: la lógica ya se verifica en loopbac
 1. `pki/make-certs.sh --out pki/out --ip host=<IP del host>` (genera la PKI de la demo; no usar `pki/example/`).
 2. Copiar a cada nodo solo `ca.crt` y su par `<node>.crt` / `<node>.key` (por ejemplo `scp`) a `pki/out/`, junto con el mismo `config.toml`.
 3. En `config.toml`: `hub.address = <IP del host>` y `hub.bind-address = "0.0.0.0"`. Abrir los puertos 7400/TCP (workers) y 7401/TCP (`astrea-host` y `device-agent`) en el host.
-4. En la Pi y en worker B: `git clone` del repositorio y `uv sync`.
+4. En el host, worker B y la Pi: `git clone` del repositorio, `sudo apt install build-essential libssl-dev`, `make -C net` (compila el demonio de red y el agente en C) y `uv sync`.
 
 **Enlace de los tres nodos:**
 ```
@@ -218,9 +239,9 @@ uv run astrea-net-check serve --expect worker-b pi:device-agent pi:worker --dura
 # worker B (sin --duration: corre hasta que el hub cierre el enlace; se pueden lanzar en cualquier orden y con minutos de diferencia)
 uv run astrea-net-check connect --name worker-b
 
-# Pi, forzando ChaCha20-Poly1305 (un proceso por rol)
-OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-net-check connect --name pi --role device-agent
-OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-net-check connect --name pi --role worker
+# Pi, ofreciendo ChaCha20-Poly1305 primero (un proceso por rol)
+uv run astrea-net-check connect --name pi --role device-agent --prefer-chacha20
+uv run astrea-net-check connect --name pi --role worker --prefer-chacha20
 ```
 Resultado esperado: el host imprime `TLSv1.3` y un RTT por cada nodo, y termina con `all expected nodes are connected and exchanging heartbeats` (código 0). Tras 5 s (`--linger`) el hub cierra los enlaces y cada nodo termina con `link ok` (código 0): vale que haya medido al menos un eco de `HEARTBEAT` y que el cierre lo haya hecho el hub. Si algún nodo falta, el hub termina con código 1 a los `--duration` segundos y lista los que faltan. Los nodos esperan al hub hasta 60 s (`--connect-timeout`).
 

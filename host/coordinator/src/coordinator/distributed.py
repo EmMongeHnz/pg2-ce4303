@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import ssl
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -80,10 +79,10 @@ def SplitEvenly(items: list, workerCount: int) -> list[list]:
 
 
 class Coordinator:
-    def __init__(self, config: ClusterConfig, sslContext: ssl.SSLContext | None = None) -> None:
+    def __init__(self, config: ClusterConfig) -> None:
         self.config = config
         self._pending: dict[str, _PendingJob] = {}
-        self._hub = HubServer(config, onMessage=self._OnMessage, onPeerLost=self._OnPeerLost, sslContext=sslContext)
+        self._hub = HubServer(config, onMessage=self._OnMessage, onPeerLost=self._OnPeerLost)
 
     async def Start(self) -> None:
         await self._hub.Start()

@@ -25,7 +25,7 @@ from astrea_common.messages import (
     RotateDone,
     SplitModel,
 )
-from astrea_common.tls import BuildClientContext, BuildServerContext
+from tls_testing import BuildClientContext, BuildServerContext
 
 HEARTBEAT_INTERVAL_S = 0.1
 HEARTBEAT_TIMEOUT_S = 0.6
@@ -39,9 +39,9 @@ def FreePort() -> int:
         return probe.getsockname()[1]
 
 
-def MakeConfig(pki, port: int, nodes: dict | None = None) -> ClusterConfig:
+def MakeConfig(pki, port: int, nodes: dict | None = None, devicePort: int | None = None) -> ClusterConfig:
     table = {
-        "hub": {"node": "host", "address": "127.0.0.1", "port": port},
+        "hub": {"node": "host", "address": "127.0.0.1", "port": port, **({} if devicePort is None else {"device-port": devicePort})},
         "tls": {"ca-file": str(pki.ca), "cert-file": str(pki.directory / "{node}.crt"), "key-file": str(pki.directory / "{node}.key")},
         "network": {
             "heartbeat-interval-s": HEARTBEAT_INTERVAL_S,
@@ -66,8 +66,8 @@ async def WaitUntil(predicate, timeout: float = WAIT_S):
 
 
 @asynccontextmanager
-async def RunningHub(config: ClusterConfig, **handlers):
-    hub = HubServer(config, **handlers)
+async def RunningHub(config: ClusterConfig, link: str = "reconstruction", **handlers):
+    hub = HubServer(config, link=link, **handlers)
     await hub.Start()
     try:
         yield hub
@@ -109,14 +109,15 @@ async def ReadUntilClosed(reader: asyncio.StreamReader, timeout: float = WAIT_S)
 def test_three_nodes_exchange_heartbeats_over_tls13(pki):
     async def scenario():
         config = MakeConfig(pki, FreePort())
-        async with RunningHub(config) as hub:
+        async with RunningHub(config) as hub, RunningHub(config, link="device") as deviceHub:
             async with RunningNode(config, "worker-b", Role.WORKER) as workerB, RunningNode(config, "pi", Role.DEVICE_AGENT) as pi:
                 await workerB.WaitConnected(WAIT_S)
                 await pi.WaitConnected(WAIT_S)
-                await WaitUntil(lambda: all(c.rttMs is not None for c in hub.peers.values()) and len(hub.peers) == 2)
+                peers = lambda: {**hub.peers, **deviceHub.peers}
+                await WaitUntil(lambda: all(c.rttMs is not None for c in peers().values()) and len(peers()) == 2)
                 await WaitUntil(lambda: workerB.connection.rttMs is not None and pi.connection.rttMs is not None)
-                sessions = {c.peer.session.split()[0] for c in hub.peers.values()} | {workerB.connection.peer.session.split()[0]}
-                return sessions, {key[0] for key in hub.peers}, workerB.connection.peer.node
+                sessions = {c.peer.session.split()[0] for c in peers().values()} | {workerB.connection.peer.session.split()[0]}
+                return sessions, {key[0] for key in peers()}, workerB.connection.peer.node
 
     sessions, names, hubName = asyncio.run(scenario())
     assert sessions == {"TLSv1.3"} and names == {"worker-b", "pi"} and hubName == "host"
@@ -125,11 +126,12 @@ def test_three_nodes_exchange_heartbeats_over_tls13(pki):
 def test_one_node_can_hold_two_roles_at_once(pki):
     async def scenario():
         config = MakeConfig(pki, FreePort())
-        async with RunningHub(config) as hub:
+        async with RunningHub(config) as hub, RunningHub(config, link="device") as deviceHub:
             async with RunningNode(config, "pi", Role.WORKER) as asWorker, RunningNode(config, "pi", Role.DEVICE_AGENT) as asAgent:
                 await asWorker.WaitConnected(WAIT_S)
                 await asAgent.WaitConnected(WAIT_S)
-                return set(hub.peers)
+                await WaitUntil(lambda: hub.peers and deviceHub.peers)
+                return set(hub.peers) | set(deviceHub.peers)
 
     assert asyncio.run(scenario()) == {("pi", Role.WORKER), ("pi", Role.DEVICE_AGENT)}
 
@@ -145,7 +147,7 @@ def test_messages_flow_in_their_allowed_directions(pki):
         async def piHandler(connection, message):
             atPi.append(message)
 
-        async with RunningHub(config, onMessage=hubHandler) as hub:
+        async with RunningHub(config, link="device", onMessage=hubHandler) as hub:
             async with RunningNode(config, "pi", Role.DEVICE_AGENT, onMessage=piHandler) as pi:
                 connection = await pi.WaitConnected(WAIT_S)
                 await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in hub.peers)
@@ -168,7 +170,7 @@ def test_messages_flow_in_their_allowed_directions(pki):
 def test_hub_refuses_to_send_a_job_to_a_device_agent(pki):
     async def scenario():
         config = MakeConfig(pki, FreePort())
-        async with RunningHub(config) as hub:
+        async with RunningHub(config, link="device") as hub:
             async with RunningNode(config, "pi", Role.DEVICE_AGENT) as pi:
                 await pi.WaitConnected(WAIT_S)
                 await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in hub.peers)
@@ -451,7 +453,8 @@ def test_slow_transfer_of_a_large_frame_is_not_mistaken_for_a_dead_peer(pki):
 
     async def scenario():
         hubPort, proxyPort = FreePort(), FreePort()
-        hubConfig, nodeConfig = MakeConfig(pki, hubPort), MakeConfig(pki, proxyPort)
+        hubConfig = MakeConfig(pki, FreePort(), devicePort=hubPort)
+        nodeConfig = MakeConfig(pki, FreePort(), devicePort=proxyPort)
 
         async def pipe(source, sink, throttled):
             try:
@@ -476,7 +479,7 @@ def test_slow_transfer_of_a_large_frame_is_not_mistaken_for_a_dead_peer(pki):
 
         proxyServer = await asyncio.start_server(proxy, "127.0.0.1", proxyPort)
         try:
-            async with RunningHub(hubConfig) as hub:
+            async with RunningHub(hubConfig, link="device") as hub:
                 async with RunningNode(nodeConfig, "pi", Role.DEVICE_AGENT, onMessage=onMessage) as node:
                     connection = await node.WaitConnected(WAIT_S)
                     await WaitUntil(lambda: ("pi", Role.DEVICE_AGENT) in hub.peers)

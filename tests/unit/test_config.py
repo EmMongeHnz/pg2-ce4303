@@ -103,11 +103,3 @@ def test_device_port_defaults_to_the_next_port_and_can_be_set():
     custom = ParseConfig(Mutated(lambda t: t["hub"].update(**{"device-port": 9000})), Path("/base"))
     assert custom.hub.devicePort == 9000
     assert custom.hub.port == config.hub.port
-
-
-def test_the_device_link_view_only_changes_the_port():
-    config = ParseConfig(Mutated(lambda t: None), Path("/base"))
-    view = config.ForDeviceLink()
-    assert view.hub.port == config.hub.devicePort
-    assert (view.hub.address, view.hub.bindAddress, view.hub.node) == (config.hub.address, config.hub.bindAddress, config.hub.node)
-    assert view.nodes == config.nodes

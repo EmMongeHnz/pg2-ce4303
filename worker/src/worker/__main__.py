@@ -1,6 +1,6 @@
 """Worker node: `uv run astrea-worker --name worker-b` connects to the hub and fuses the views it is assigned.
 
-Launch the Pi with `OPENSSL_CONF=pki/openssl-chacha20.cnf` to force ChaCha20-Poly1305. `--max-grid-mib`
+Launch the Pi with `--prefer-chacha20` to offer ChaCha20-Poly1305 first (it has no AES instructions). `--max-grid-mib`
 limits the size of the voxel grid this worker accepts (default: a third of the available memory).
 """
 
@@ -19,6 +19,7 @@ def ParseArgs(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--config", default="config.toml", help="cluster configuration (default: config.toml)")
     parser.add_argument("--name", required=True, help="node name from config.toml")
     parser.add_argument("--max-grid-mib", type=float, default=None, help="largest voxel grid to accept, in MiB")
+    parser.add_argument("--prefer-chacha20", action="store_true", help="offer ChaCha20-Poly1305 first (for the Pi)")
     parser.add_argument("--verbose", action="store_true", help="log link and job events")
     return parser.parse_args(argv)
 
@@ -33,7 +34,7 @@ def Main(argv: list[str] | None = None) -> int:
     try:
         config = LoadConfig(args.config)
         maxGridBytes = None if args.max_grid_mib is None else int(args.max_grid_mib * 1024**2)
-        service = WorkerService(config, args.name, Role.WORKER, maxGridBytes)
+        service = WorkerService(config, args.name, Role.WORKER, maxGridBytes, preferChacha=args.prefer_chacha20)
         print(f"worker '{args.name}' dialing {config.hub.address}:{config.hub.port} (grid limit {service.maxGridBytes / 1024**2:.0f} MiB)", flush=True)
         asyncio.run(Serve(service))
     except ConfigError as error:

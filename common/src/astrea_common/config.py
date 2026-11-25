@@ -8,7 +8,7 @@ name of the node running on that machine, so each machine only needs its own key
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -60,11 +60,6 @@ class ClusterConfig:
     tls: TlsSettings
     baseDir: Path
 
-    def ForDeviceLink(self) -> "ClusterConfig":
-        """The same cluster seen through the hub that serves the device agent (`astrea-host`), on its own port so it
-        can run next to the reconstruction hub."""
-        return replace(self, hub=replace(self.hub, port=self.hub.devicePort))
-
     def Node(self, name: str) -> NodeConfig:
         if name not in self.nodes:
             raise ConfigError(f"node '{name}' is not in the configuration")
@@ -78,6 +73,37 @@ class ClusterConfig:
 
     def CaFile(self) -> Path:
         return self._Resolve(str(self.tls.caFile))
+
+    def ToToml(self) -> str:
+        """The same configuration with every path made absolute, in the file format the C network daemon reads."""
+
+        def quote(text: str) -> str:
+            return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+        lines = [
+            "[hub]",
+            f"node = {quote(self.hub.node)}",
+            f"address = {quote(self.hub.address)}",
+            f"bind-address = {quote(self.hub.bindAddress)}",
+            f"port = {self.hub.port}",
+            f"device-port = {self.hub.devicePort}",
+            "",
+            "[tls]",
+            f"ca-file = {quote(str(self.CaFile()))}",
+            f"cert-file = {quote(str(self._Resolve(self.tls.certFileTemplate)))}",
+            f"key-file = {quote(str(self._Resolve(self.tls.keyFileTemplate)))}",
+            "",
+            "[network]",
+            f"heartbeat-interval-s = {self.network.heartbeatIntervalS}",
+            f"heartbeat-timeout-s = {self.network.heartbeatTimeoutS}",
+            f"connect-timeout-s = {self.network.connectTimeoutS}",
+            f"reconnect-initial-s = {self.network.reconnectInitialS}",
+            f"reconnect-max-s = {self.network.reconnectMaxS}",
+        ]
+        for name, node in self.nodes.items():
+            roles = ", ".join(quote(role.value) for role in sorted(node.roles, key=lambda role: role.value))
+            lines += ["", f"[nodes.{name}]", f"roles = [{roles}]"]
+        return "\n".join(lines) + "\n"
 
     def _Resolve(self, path: str) -> Path:
         candidate = Path(path)

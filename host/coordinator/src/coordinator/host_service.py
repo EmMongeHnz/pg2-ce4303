@@ -23,13 +23,11 @@ import asyncio
 import contextlib
 import logging
 import re
-import ssl
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from astrea_common.compression import ZstdCompress
 from astrea_common.config import ClusterConfig, ConfigError, LoadConfig
 from astrea_common.holo_event import DescribeEvent, EventValue
 from astrea_common.link import Connection, HubServer
@@ -58,7 +56,6 @@ class HostService:
         rendererSocket: Path,
         modelIds: tuple[str, ...] | None = None,
         clock: Callable[[], float] = time.monotonic,
-        sslContext: ssl.SSLContext | None = None,
     ) -> None:
         self.modelsDir = Path(modelsDir)
         self.modelsPushed = 0
@@ -68,11 +65,11 @@ class HostService:
         self.bridge = RendererBridge(self.control, rendererSocket, clock=clock)
         self.bridge.AddStateListener(self._QueueState)
         self.hub = HubServer(
-            config.ForDeviceLink(),
+            config,
             onMessage=self._OnMessage,
             onPeerConnected=self._OnPeerConnected,
             onPeerLost=self._OnPeerLost,
-            sslContext=sslContext,
+            link="device",
         )
         self._latestToSend: CameraState | None = None
         self._stateReady = asyncio.Event()
@@ -146,11 +143,11 @@ class HostService:
             LOG.warning("could not sync %s: %s", connection.peer.node, error)
 
     async def _PushModel(self, connection: Connection, modelId: str) -> None:
-        data = await asyncio.to_thread(lambda: ZstdCompress((self.modelsDir / f"{modelId}.glb").read_bytes()))
-        for chunk in SplitModel(modelId, data, Compression.ZSTD):
+        data = await asyncio.to_thread((self.modelsDir / f"{modelId}.glb").read_bytes)
+        for chunk in SplitModel(modelId, data, Compression.NONE):
             await connection.Send(chunk)
         self.modelsPushed += 1
-        LOG.info("pushed model '%s' to %s (%d bytes compressed)", modelId, connection.peer.node, len(data))
+        LOG.info("pushed model '%s' to %s (%d bytes)", modelId, connection.peer.node, len(data))
 
 
 async def Serve(service: HostService) -> None:
