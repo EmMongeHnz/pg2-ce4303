@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Device tree overlay for holo-io on the Raspberry Pi 3: five push buttons wired between a GPIO and GND.
+ * Pins are BCM numbers: 4 right, 27 left, 22 zoom in, 23 zoom out, 24 automatic rotation toggle.
+ *
+ * Build and load on the Pi:
+ *   dtc -@ -I dts -O dtb -o holo-io.dtbo holo-io-overlay.dts
+ *   sudo cp holo-io.dtbo /boot/firmware/overlays/ && echo "dtoverlay=holo-io" | sudo tee -a /boot/firmware/config.txt
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&gpio>;
+		__overlay__ {
+			holo_io_pins: holo_io_pins {
+				brcm,pins = <4 27 22 23 24>;
+				brcm,function = <0>;
+				brcm,pull = <2>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			holo_io: holo-io {
+				compatible = "astreaview,holo-io";
+				pinctrl-names = "default";
+				pinctrl-0 = <&holo_io_pins>;
+				status = "okay";
+
+				button-right {
+					label = "right";
+					gpios = <&gpio 4 1>;
+				};
+				button-left {
+					label = "left";
+					gpios = <&gpio 27 1>;
+				};
+				button-zoom-in {
+					label = "zoom-in";
+					gpios = <&gpio 22 1>;
+				};
+				button-zoom-out {
+					label = "zoom-out";
+					gpios = <&gpio 23 1>;
+				};
+				button-autorotate {
+					label = "autorotate";
+					gpios = <&gpio 24 1>;
+				};
+			};
+		};
+	};
+};
