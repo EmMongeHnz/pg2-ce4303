@@ -22,7 +22,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
 - **Captura:** Record3D más una tubería de reconstrucción propia.
 - **Base giratoria manual** (sin motor). La pose de cada vista se obtiene **solo con ArUco**.
 - **Tornamesa motorizada:** queda como **fase opcional** (28BYJ-48 + plato impreso en 3D sobre rodamiento). Su interfaz se define desde el inicio.
-- **Control:** un **joystick digital tipo arcade por GPIO**. El ZX Gesture Sensor queda como **fase opcional final**.
+- **Control:** **5 pulsadores por GPIO** (derecha, izquierda, zoom +, zoom −, activar o desactivar la rotación automática). No hay rotación vertical: el pitch queda fijo. El ZX Gesture Sensor queda como **fase opcional final**.
 - **Holograma:** un solo panel a 45° sobre un monitor viejo.
 
 ---
@@ -33,7 +33,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
 |---|---|---|
 | App iOS propia sin Mac | Xcode es obligatorio. Compilar en CI macOS y hacer sideload da certificados de 7 días y no hay depurador. | Record3D transmite el RGB-D del TrueDepth. El trabajo propio está en la tubería. |
 | Pose de cada vista sin motor | Si la base se gira a mano, no se conoce el ángulo. Registrar las vistas con ICP es frágil con el ruido del TrueDepth. | Un **anillo de marcadores ArUco** en el borde del plato da la pose en cada frame, aunque el objeto tape algunos marcadores. Se captura automáticamente cada ~10°. |
-| Área de "Hardware" sin motor | La especificación pide "movimiento o procesamiento interesante". | El holograma y el renderer cubren la parte de procesamiento. La tornamesa motorizada queda lista para agregarse y reforzar el área. **Riesgo:** si no se implementa, el argumento de hardware se apoya en el display y el joystick. |
+| Área de "Hardware" sin motor | La especificación pide "movimiento o procesamiento interesante". | El holograma y el renderer cubren la parte de procesamiento. La tornamesa motorizada queda lista para agregarse y reforzar el área. **Riesgo:** si no se implementa, el argumento de hardware se apoya en el display y los botones. |
 | Enviar la visualización como video | Agrega latencia y carga en la Pi 3. | Se sincroniza solo el **estado de cámara**. La Pi renderiza localmente el modelo, que recibe cifrado una sola vez. |
 | Distribución débil | El teléfono no procesa nada propio. | La reconstrucción se **paraleliza por vistas** en ≥3 workers y se combina de forma exacta. |
 | Tamaño variable del modelo | Una malla sin control puede llegar a cientos de miles de vértices con ruido. | Una rejilla de vóxeles fija, limpieza, decimación a un presupuesto de triángulos y dos niveles de detalle (LOD). |
@@ -45,6 +45,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
 ```
  iPhone (Record3D, TrueDepth) ──USB/Wi-Fi──► HOST PC
                                            ├─ capture-service  (tracking ArUco, captura automática)
+                                           ├─ astrea-host      (servicio permanente: dueño del hub, estado de cámara, MODEL_PUSH)
                                            ├─ coordinator      (reparte trabajos, fusiona, malla)
                                            ├─ worker
                                            └─ renderer --mode viewer
@@ -52,7 +53,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
         ┌──────────────────────────────────────┘        └───────────┐
    WORKER B (laptop del equipo)                         RASPBERRY PI 3 (dispositivo)
    └─ worker                                            ├─ módulo de kernel holo-io
-                                                        │   ├─ /dev/holo-input  (joystick GPIO; ZX después)
+                                                        │   ├─ /dev/holo-input  (5 botones GPIO; ZX después)
                                                         │   └─ /dev/turntable   (opcional)
                                                         ├─ device-agent (Python, mTLS)
                                                         ├─ worker (ligero)
@@ -120,11 +121,13 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 ## Componente 2 — Visor (`renderer`, C + raylib)
 
 - **Un solo binario:** `renderer --mode viewer|hologram --lod high|low`. Carga GLB. En la Pi 3 usa `PLATFORM_DRM` (GLES2 directo a KMS, sin X).
-- **Cámara orbital:** yaw, pitch y zoom, más autorrotación opcional.
+- **Cámara orbital:** yaw y zoom, con pitch fijo (20°), más autorrotación que empieza desactivada.
 - **Modo hologram:** fondo negro, imagen espejada según la orientación del panel e iluminación alta.
 - **El host es la fuente de verdad del estado de cámara.**
-  - Combina el mouse local con los eventos del joystick remoto.
-  - Emite `CameraState{yaw, pitch, zoom, modelId}` cuando cambia, a ≤60 Hz.
+  - Un servicio permanente del host (`astrea-host`) es dueño del hub y del estado de cámara. Combina teclado y mouse locales con los eventos de botones remotos; las contribuciones se suman.
+  - Integra también la autorrotación (20°/s, empieza desactivada), de modo que los dos visores giran igual. El renderer del host solo reporta entradas crudas por el socket Unix y dibuja el estado que recibe.
+  - Emite `CameraState{yaw, pitch, zoom, modelId}` cuando cambia, a ≤60 Hz. `pitch` viaja siempre con el valor fijo.
+  - Teclado: A/D giran, W/S hacen zoom, `R` activa o desactiva la autorrotación y `N` pasa al siguiente modelo. El arrastre del mouse solo gira en horizontal (sin rueda). No hay reset.
 - **Socket Unix local** entre el proceso Python y el renderer. No necesita cifrado porque no pasa por la red.
 
 ---
@@ -145,7 +148,7 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 | Panel de PETG/acrílico de 1–2 mm (o el vidrio de un marco de fotos) | $3–6 |
 | Monitor HDMI viejo, o panel de laptop con controladora HDMI, boca arriba | $0–20 |
 | Caja negra mate por dentro (cartón o MDF) | $0–3 |
-| Joystick arcade digital (4 microswitches) + 4 botones | ~$5–10 |
+| 5 pulsadores (GPIO 4, 27, 22, 23, 24) | ~$5–10 |
 | Base giratoria manual: plato de 15–20 cm, superficie mate clara, anillo ArUco impreso | ~$0–3 |
 | *(Opcional)* 28BYJ-48 + ULN2003 + lazy susan + plato impreso en 3D | ~$6 |
 | *(Opcional)* ZX Gesture Sensor | ~$25 |
@@ -153,21 +156,22 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 ### Driver: módulo de kernel `holo-io` (C)
 
 **Overlay de device tree**
-- Declara los GPIO del joystick (4 direcciones + 4 botones) con `bias-pull-up`.
+- Declara los 5 botones (BCM 4 derecha, 27 izquierda, 22 zoom +, 23 zoom −, 24 autorrotación) con `bias-pull-up`, cada uno entre el GPIO y GND.
 - Reserva los nodos del ZX (I2C1 `0x10`, pin DR) y del stepper (4 GPIO), deshabilitados (`status = "disabled"`) hasta su fase.
 - El código usa la API `gpiod_*`.
 
 **`/dev/holo-input`** (char device; una sola interfaz para todas las entradas)
-- **Formato de evento:** `struct HoloEvent{source, code, value, timestampNs}`. Hoy `source` es `JOYSTICK`; más adelante también `ZX_GESTURE`, sin cambiar el agente.
-- **Joystick:**
+- **Formato de evento:** `struct HoloEvent{source, code, value, timestampNs}`. Hoy `source` es `JOYSTICK` (1, el valor se conserva por el protocolo; son los botones); más adelante también `ZX_GESTURE`, sin cambiar el agente. `value`: 0 suelta, 1 pulsa, 2 repite. El header `driver/holo-io/holo-event.h` es la fuente de verdad.
+- **Botones:**
   - IRQ por ambos flancos en cada GPIO.
   - **Debounce** con `hrtimer` (~5–10 ms) antes de leer el estado estable.
-  - **Autorepeat** mientras una dirección se mantiene presionada (`hrtimer` periódico), para dar rotación continua.
+  - **Autorepeat** de derecha, izquierda, zoom + y zoom − mientras se mantienen presionados (`hrtimer` periódico, 50 ms por defecto, la primera repetición un periodo después de la pulsación), para dar movimiento continuo. El botón de autorrotación no repite. El host detiene el movimiento si dejan de llegar repeticiones (0.3 s), por lo que el periodo máximo configurable es 100 ms.
 - **Interfaz con el usuario del dispositivo:**
-  - eventos encolados en un `kfifo` con `wait_queue`;
+  - eventos encolados en un `kfifo` de 256 registros con `wait_queue`; un solo lector a la vez;
   - `read()` / `poll()`;
-  - `ioctl` para configurar el debounce y la tasa de repetición;
-  - estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos).
+  - `ioctl` para configurar el debounce (1–100 ms, 10 por defecto) y la tasa de repetición (10–100 ms, 50 por defecto);
+  - estadísticas en `sysfs` (IRQs, rebotes filtrados, pulsaciones, soltadas, repeticiones, descartados).
+  - El contrato completo está en `docs/protocol.md`.
 - **Fase opcional (ZX):** `i2c_driver` con IRQ threaded en el pin DR que publica en el mismo `kfifo`.
 
 **`/dev/turntable`** (fase opcional)
@@ -186,15 +190,17 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 
 ### `device-agent` (Python en la Pi)
 
-**Mapeo del joystick**
+**Mapeo de los botones**
 
-| Entrada | Acción |
-|---|---|
-| ←/→ (mantener) | Yaw continuo |
-| ↑/↓ | Pitch |
-| Botón A / B | Zoom + / − |
-| Botón C | Reset de vista |
-| Botón D | Siguiente modelo |
+| GPIO (BCM) | Código | Acción |
+|---|---|---|
+| 4 | `BTN_RIGHT` | Yaw continuo a la derecha (mantener) |
+| 27 | `BTN_LEFT` | Yaw continuo a la izquierda (mantener) |
+| 22 | `BTN_ZOOM_IN` | Zoom + (mantener) |
+| 23 | `BTN_ZOOM_OUT` | Zoom − (mantener) |
+| 24 | `BTN_AUTOROTATE` | Activar o desactivar la rotación automática |
+
+Reset de vista y siguiente modelo no tienen botón: solo existen en el teclado del host.
 
 **Además, el agente:**
 - envía las acciones al host por mTLS;
@@ -225,10 +231,10 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 
 ```
 astrea-view/
-  driver/holo-io/          # holo-io.c, holo-joystick.c, zx-gesture.c*, turntable.c*, holo-io-overlay.dts, Makefile
+  driver/holo-io/          # holo-core.c, holo-buttons.c, holo-io.h, holo-event.h, holo-ioctl.h, holo-reader.c, zx-gesture.c*, turntable.c*, holo-io-overlay.dts, 99-holo-io.rules, Makefile
   device-agent/            # input mapping, mTLS client
   host/capture-service/    # record3d / .r3d ingestion, ArUco tracking, keyframe selection
-  host/coordinator/        # scheduling, TSDF merge, meshing, LOD export
+  host/coordinator/        # scheduling, TSDF merge, meshing, LOD export, camera state (camera_control)
   worker/                  # partial TSDF fusion
   renderer/                # C + raylib, viewer/hologram modes
   common/                  # protocol, TLS context, config
@@ -249,7 +255,7 @@ astrea-view/
 - c) raylib en DRM sobre la Pi 3 a ≥30 fps con 8k triángulos.
 - d) Prueba de reflejo con el monitor y el panel.
 
-**1. Driver:** `/dev/holo-input` con el joystick (IRQ, debounce, autorepeat, `poll`, `ioctl`, `sysfs`), su overlay de DT y la carga al arrancar.
+**1. Driver:** `/dev/holo-input` con los 5 botones (IRQ, debounce, autorepeat, `poll`, `ioctl`, `sysfs`), su overlay de DT y la carga al arrancar.
 
 **2. Red segura:** PKI, framing, mTLS entre los 3 nodos y heartbeat.
 
@@ -257,11 +263,11 @@ astrea-view/
 
 **4. Distribución:** reparto por rendimiento, merge exacto, reasignación ante fallos y medición de 1 vs 3 workers.
 
-**5. Renderer:** modos viewer y hologram, sincronización de `CameraState` y mapeo del joystick.
+**5. Renderer:** modos viewer y hologram, sincronización de `CameraState` y mapeo de los botones y del teclado.
 
-**6. Maqueta:** caja Pepper's Ghost, montaje del joystick, base manual con ArUco.
+**6. Maqueta:** caja Pepper's Ghost, montaje de los botones, base manual con ArUco.
 
-**7. Documentación:** secciones IEEE y los diagramas (arquitectura, componentes, secuencias de escaneo y de joystick→holograma, funcionalidades). Evidencias de aprendizaje continuo.
+**7. Documentación:** secciones IEEE y los diagramas (arquitectura, componentes, secuencias de escaneo y de botones→holograma, funcionalidades). Evidencias de aprendizaje continuo.
 
 **8. Opcionales**, en orden:
 - a) Tornamesa motorizada: `/dev/turntable` + plato impreso + `ROTATE` en `capture-service`.
@@ -273,7 +279,7 @@ astrea-view/
 
 **Driver**
 - `insmod` / `dmesg` limpios.
-- Un lector de prueba imprime los eventos del joystick.
+- Un lector de prueba imprime los eventos de los botones.
 - Pulsar 100 veces un botón da exactamente 100 eventos (el debounce funciona); las estadísticas de `sysfs` coinciden.
 - `rmmod` sin fugas de IRQ ni de GPIO.
 
@@ -292,7 +298,7 @@ astrea-view/
 - Wireshark muestra solo TLS 1.3.
 - Se rechaza un cliente sin certificado o con uno de otra CA.
 
-**Fin a fin:** girar el objeto a mano → captura automática → modelo en el visor → aparece en el holograma → el joystick rota y hace zoom en ambos sincronizados, con latencia del joystick al holograma < 100 ms.
+**Fin a fin:** girar el objeto a mano → captura automática → modelo en el visor → aparece en el holograma → los botones rotan y hacen zoom en ambos sincronizados, con latencia del botón al holograma < 100 ms.
 
 ## Confirmado
 - Segundo computador disponible como worker B.

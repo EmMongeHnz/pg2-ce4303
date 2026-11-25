@@ -33,6 +33,8 @@ Generated files are not versioned (see `.gitignore`): `out/`, build directories,
 
 Keep `plan/milestones-and-actions.md` current: when a task or acceptance criterion is completed or partially advanced, tick its checkbox or annotate its status in the same change that advances it. Do not tick a criterion that still depends on pending hardware checks.
 
+Whenever a change alters a design decision (inputs, protocol values, topology, who owns a component, constants shared across languages), update `plan/implementation-plan.md`, `plan/milestones-and-actions.md` and `docs/protocol.md` in the same change, and tell the user which other artifacts (for example `docs/block-diagram.dot`) are now out of date. Do not leave the old wording behind.
+
 Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags are defined in the diagram legend and must stay consistent with the protocol messages in `plan/implementation-plan.md`.
 
 ## Code layout
@@ -46,13 +48,13 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 
 Three processing nodes that talk only over TCP with TLS 1.3 mutual auth (own CA, one cert per node, ChaCha20-Poly1305 preferred because the Pi 3 has no AES acceleration):
 
-1. **Host PC**: `capture-service` (Record3D RGB-D over USB, pose from an ArUco ring on a manual turntable, automatic keyframes every ~10°), `coordinator` (splits views across workers, exact weighted TSDF merge, meshing, LOD export to GLB), a `worker`, and `renderer --mode viewer`.
+1. **Host PC**: `capture-service` (Record3D RGB-D over USB, pose from an ArUco ring on a manual turntable, automatic keyframes every ~10°), `coordinator` (splits views across workers, exact weighted TSDF merge, meshing, LOD export to GLB), a `worker`, `astrea-host` (planned, M5: permanent service that owns the hub, the camera state and `MODEL_PUSH`), and `renderer --mode viewer`.
 2. **Worker B** (second team laptop): `worker` (partial TSDF fusion).
-3. **Raspberry Pi 3**: `holo-io` kernel module exposing `/dev/holo-input` (GPIO joystick; optional ZX gesture sensor and `/dev/turntable` later), `device-agent` (Python, mTLS client), a light `worker`, and `renderer --mode hologram` (DRM/GLES2) feeding a Pepper's Ghost display.
+3. **Raspberry Pi 3**: `holo-io` kernel module exposing `/dev/holo-input` (5 GPIO buttons; optional ZX gesture sensor and `/dev/turntable` later), `device-agent` (Python, mTLS client), a light `worker`, and `renderer --mode hologram` (DRM/GLES2) feeding a Pepper's Ghost display.
 
 Key cross-cutting rules from the plan:
 
-- **The host is the source of truth for camera state.** It sends `CameraState` (yaw, pitch, zoom, modelId) to the Pi, and the Pi renders the model it received once. Video is never streamed.
+- **The host is the source of truth for camera state.** It sends `CameraState` (yaw, pitch fixed at 20°, zoom, modelId) to the Pi, and the Pi renders the model it received once. Video is never streamed.
 - **Distributed reconstruction must match single-node output.** The merge is `D = Σ wᵢ·dᵢ / Σ wᵢ` on a fixed common voxel grid.
 - **Wire framing** is `[u32 length][u8 type][msgpack payload]`. The renderer talks to its local Python process over a Unix socket, which has no encryption because it never touches the network.
 - `/dev/holo-input` is the single input interface for every device. New sources add a `source` value to `struct HoloEvent`, so the agent never needs a new device node.

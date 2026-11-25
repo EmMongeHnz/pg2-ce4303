@@ -45,3 +45,7 @@ pki/out/
 .idea/
 *.swp
 .DS_Store
+
+# Built by driver/holo-io/Makefile
+driver/holo-io/holo-reader
+driver/holo-io/*.dtbo

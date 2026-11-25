@@ -4,7 +4,7 @@ Especificación del transporte seguro y de los mensajes entre los nodos (M2). La
 
 ## 1. Topología
 
-El host PC es el **hub**: escucha en un puerto TCP fijo (`hub.port`, por defecto 7400). Worker B y la Pi **abren la conexión hacia el hub**; no hay enlaces entre ellos. Cada conexión es bidireccional y persistente, y cada nodo se reconecta con espera exponencial (`reconnect-initial-s` a `reconnect-max-s`).
+El host PC es el **hub**: escucha en un puerto TCP fijo (`hub.port`, por defecto 7400). Lo mantiene un servicio permanente del host (`astrea-host`, previsto en M5) que también lleva el estado de cámara; mientras no exista, el hub solo vive durante `astrea-coordinator reconstruct`. La Pi puede conectarse por un cable Ethernet directo al host: es solo la capa física, el protocolo y el cifrado no cambian. Worker B y la Pi **abren la conexión hacia el hub**; no hay enlaces entre ellos. Cada conexión es bidireccional y persistente, y cada nodo se reconecta con espera exponencial (`reconnect-initial-s` a `reconnect-max-s`).
 
 Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker` y otra como `device-agent`; el host puede abrir una como `worker` hacia su propio hub). El hub guarda una sola conexión viva por pareja (nodo, rol): una conexión nueva reemplaza a la anterior.
 
@@ -54,8 +54,8 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 | `JOB_ASSIGN` | 2 | `jobId` str, `part`/`parts` int, `grid {originMm[3], voxelMm, shape[3]}`, `truncationMm`, `params` mapa (overrides de `PreprocessParams` y opciones TSDF), `views[]` |
 | `JOB_RESULT` | 3 | `jobId` str, `part`/`parts` int, `status` (`ok` / `error`), `error` str, `elapsedS` (segundos de fusión), `viewIndices[]`, `blocks[]`, `keptPercent[]` (opcional, porcentaje de profundidad que conserva el preprocesado por vista, en el mismo orden que `viewIndices`) |
 | `HEARTBEAT` | 4 | `sequence` int, `sentAtNs` int, `echo` bool |
-| `INPUT_EVENT` | 5 | `source`, `code`, `value`, `timestampNs` (espejo de `struct HoloEvent`; `source`: 1 joystick, 2 gesto ZX) |
-| `CAMERA_STATE` | 6 | `yaw`, `pitch`, `zoom` float, `modelId` str |
+| `INPUT_EVENT` | 5 | `source`, `code`, `value`, `timestampNs` (espejo de `struct HoloEvent`; `source`: 1 botones GPIO, 2 gesto ZX; valores de `code` y `value` en la subsección N3) |
+| `CAMERA_STATE` | 6 | `yaw`, `pitch`, `zoom` float, `modelId` str (`pitch` es fijo, 20°) |
 | `MODEL_PUSH` | 7 | `modelId`, `index`, `count`, `totalSize`, `sha256` (hex del modelo completo tal como se transmite), `compression` (`none` / `zstd`), `data` bin |
 | `ROTATE` | 8 | `requestId`, `steps` (definido, deshabilitado) |
 | `ROTATE_DONE` | 9 | `requestId`, `positionSteps` (definido, deshabilitado) |
@@ -65,6 +65,45 @@ Sub-estructuras:
 - **`blocks[]`** (de `JOB_RESULT`): `startIndex[3]` y `shape[3]` de una caja de vóxeles con peso > 0, y `tsdf`, `weight`, `color` como `ArrayBlob`.
 - **`ArrayBlob`**: `dtype` (enteros o flotantes de hasta 8 bytes, little endian), `shape` (1 a 4 dimensiones), `compression` (`none` / `zstd`), `data`. La descompresión está acotada por el tamaño que declara `shape`.
 - **Modelos:** el receptor junta los chunks en cualquier orden y acepta el modelo solo si el tamaño y el SHA-256 coinciden (`ModelAssembler`).
+
+### Entradas y estado de cámara (N3)
+
+- **Botones GPIO** (`source = 1`; `driver/holo-io/holo-event.h` es la fuente de verdad y `astrea_common.holo_event` lo espeja):
+
+  | `code` | Botón | GPIO (BCM) | Acción |
+  |---|---|---|---|
+  | 1 | `BTN_RIGHT` | 4 | yaw a la derecha mientras se mantiene |
+  | 2 | `BTN_LEFT` | 27 | yaw a la izquierda mientras se mantiene |
+  | 3 | `BTN_ZOOM_IN` | 22 | zoom + mientras se mantiene |
+  | 4 | `BTN_ZOOM_OUT` | 23 | zoom − mientras se mantiene |
+  | 5 | `BTN_AUTOROTATE` | 24 | activa o desactiva la rotación automática |
+
+- **`value`:** 0 suelta, 1 pulsa, 2 repite. El driver repite los cuatro botones de movimiento mientras se mantienen; el de autorrotación no repite y solo actúa al pulsar. El host da por terminado un movimiento si dejan de llegar repeticiones durante 0.3 s, de modo que un evento de soltar perdido no deja la cámara moviéndose.
+- **El host es la única fuente de verdad.** Integra botones, teclado (A/D yaw, W/S zoom, `R` autorrotación, `N` modelo siguiente) y mouse (arrastre horizontal) en un solo estado; las contribuciones se suman. No hay rotación vertical ni reset.
+- **Autorrotación:** la integra el host (20°/s, empieza desactivada) y llega a los visores dentro de `yaw`; ningún renderer gira por su cuenta cuando lo controla el host.
+- **`CAMERA_STATE`:** se emite cuando algo cambia, a ≤60 Hz, y siempre con el estado final tras un movimiento. `pitch` se conserva en el mensaje con el valor fijo 20.0. No hay cambios en el formato de los mensajes, solo en los valores que llevan.
+
+### Interfaz del driver `/dev/holo-input` (Pi, entre el driver y el `device-agent`)
+
+No viaja por la red: es el contrato local entre `holo-io` y el agente, que reenvía cada registro como `INPUT_EVENT`. Fuentes de verdad: `driver/holo-io/holo-event.h` y `driver/holo-io/holo-ioctl.h`.
+
+- **Registro:** `struct HoloEvent` de 16 bytes, sin relleno y en el orden de la CPU (little-endian en la Pi 3 y en x86): `timestampNs` u64 (reloj monotónico de la Pi, `ktime_get_ns`), `source` u16, `code` u16, `value` s32.
+- **Apertura exclusiva:** un solo lector a la vez; un segundo `open` falla con `EBUSY`. Al abrir se descartan los eventos acumulados.
+- **`read()`:** devuelve uno o más registros completos (hasta 16 por llamada); un búfer menor a 16 bytes da `EINVAL`. Sin eventos bloquea, o responde `EAGAIN` con `O_NONBLOCK`. Si el dispositivo desaparece responde `ENODEV`.
+- **`poll()`:** `POLLIN` cuando hay eventos y `POLLHUP` si el dispositivo se está retirando.
+- **Cola:** `kfifo` de 256 registros. Si se llena, el evento nuevo se descarta y se cuenta en `dropped`.
+- **Orden:** una pulsación genera `PRESS`; mientras se mantiene un botón de movimiento llegan `REPEAT` y al soltar `RELEASE`. Nunca llega un `REPEAT` después de su `RELEASE`.
+- **`ioctl`** (magia `'H'`, valores `__u32` en milisegundos):
+
+  | Orden | Número | Rango | Por defecto |
+  |---|---|---|---|
+  | `HOLO_IOC_GET_DEBOUNCE_MS` / `HOLO_IOC_SET_DEBOUNCE_MS` | 1 / 2 | 1–100 | 10 |
+  | `HOLO_IOC_GET_REPEAT_MS` / `HOLO_IOC_SET_REPEAT_MS` | 3 / 4 | 10–100 | 50 |
+
+  Un valor fuera de rango da `EINVAL`. La primera repetición llega un periodo después de la pulsación, y el máximo de 100 ms deja al menos 3 repeticiones dentro del corte de 0.3 s del host (`BUTTON_HOLD_TIMEOUT_S`, comprobado en `tests/unit/test_holo_io_sources.py`).
+- **Estadísticas** en `/sys/class/misc/holo-input/device/stats/` (solo lectura): `irqs` (flancos), `presses`, `releases`, `repeats`, `events` (suma de las tres), `bounces_filtered` (flancos que no terminaron en pulsación ni suelta, es decir `irqs − presses − releases`), `dropped`, `debounce_ms` y `repeat_ms`.
+- **Criterio «N pulsaciones = N eventos»:** se cuenta en eventos `PRESS`. Con el botón de autorrotación, que no repite, `presses` aumenta en N, el lector ve N `PRESS` y `dropped` no cambia (`driver/holo-io/check-presses.sh`).
+- **Acceso:** la regla udev `99-holo-io.rules` deja el nodo en el grupo `input` con modo 0660.
 
 ### Trabajos de reconstrucción (N1)
 
