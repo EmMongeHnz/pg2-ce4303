@@ -27,7 +27,7 @@ def FreePort() -> int:
 
 def MakeConfig(pki, port: int) -> ClusterConfig:
     table = {
-        "hub": {"node": "host", "address": "127.0.0.1", "port": port},
+        "hub": {"node": "host", "address": "127.0.0.1", "port": port, "device-port": FreePort()},
         "tls": {"ca-file": str(pki.ca), "cert-file": str(pki.directory / "{node}.crt"), "key-file": str(pki.directory / "{node}.key")},
         "network": {"heartbeat-interval-s": 0.1, "heartbeat-timeout-s": 0.6, "connect-timeout-s": 2.0, "reconnect-initial-s": 0.05, "reconnect-max-s": 0.2},
         "nodes": {"host": {"roles": ["coordinator"]}, "worker-b": {"roles": ["worker"]}, "pi": {"roles": ["worker", "device-agent"]}},
@@ -53,7 +53,7 @@ class Harness:
     def __init__(self, pki, tmp_path: Path, withDevice: bool = True) -> None:
         self.config = MakeConfig(pki, FreePort())
         self.received: list = []
-        self.hub = HubServer(self.config, onMessage=self._OnHubMessage)
+        self.hub = HubServer(self.config.ForDeviceLink(), onMessage=self._OnHubMessage)
         self.devicePath = tmp_path / "holo-input"
         self.socketPath = tmp_path / "r.sock"
         self.modelsDir = tmp_path / "models"

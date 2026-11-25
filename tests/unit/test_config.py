@@ -66,6 +66,9 @@ def Mutated(mutate) -> dict:
         lambda t: t["hub"].update(port=70000),
         lambda t: t["hub"].update(port="7400"),
         lambda t: t["hub"].update(node="ghost"),
+        lambda t: t["hub"].update(**{"device-port": 70000}),
+        lambda t: t["hub"].update(**{"device-port": "7401"}),
+        lambda t: t["hub"].update(**{"device-port": t["hub"]["port"]}),
         lambda t: t["nodes"]["host"].update(roles=["worker"]),
         lambda t: t["nodes"]["pi"].update(roles=["coordinator"]),
         lambda t: t["nodes"]["pi"].update(roles=["admin"]),
@@ -92,3 +95,19 @@ def test_missing_file_and_invalid_toml_are_reported(tmp_path: Path):
     broken.write_text("[hub\nnode =")
     with pytest.raises(ConfigError):
         LoadConfig(broken)
+
+
+def test_device_port_defaults_to_the_next_port_and_can_be_set():
+    config = ParseConfig(Mutated(lambda t: None), Path("/base"))
+    assert config.hub.devicePort == config.hub.port + 1
+    custom = ParseConfig(Mutated(lambda t: t["hub"].update(**{"device-port": 9000})), Path("/base"))
+    assert custom.hub.devicePort == 9000
+    assert custom.hub.port == config.hub.port
+
+
+def test_the_device_link_view_only_changes_the_port():
+    config = ParseConfig(Mutated(lambda t: None), Path("/base"))
+    view = config.ForDeviceLink()
+    assert view.hub.port == config.hub.devicePort
+    assert (view.hub.address, view.hub.bindAddress, view.hub.node) == (config.hub.address, config.hub.bindAddress, config.hub.node)
+    assert view.nodes == config.nodes

@@ -61,7 +61,7 @@ class DeviceAgentService:
         self._stopping = False
         self._deviceTask: asyncio.Task | None = None
         self._link = RendererLink(rendererSocket, currentState=lambda: self._latestState)
-        self._client = NodeClient(config, nodeName, Role.DEVICE_AGENT, onMessage=self._OnMessage, sslContext=sslContext)
+        self._client = NodeClient(config.ForDeviceLink(), nodeName, Role.DEVICE_AGENT, onMessage=self._OnMessage, sslContext=sslContext)
 
     async def Run(self) -> None:
         self.modelsDir.mkdir(parents=True, exist_ok=True)
