@@ -27,6 +27,7 @@ FetchContent_MakeAvailable(raylib)
 
 add_executable(renderer
   src/main.c
+  src/control-link.c
   src/options.c
   src/orbit-camera.c
   src/shading.c

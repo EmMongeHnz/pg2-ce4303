@@ -5,11 +5,14 @@
  *   renderer --mode viewer   --model lod-full.glb --up-axis z --rotate-z 90   # astrea-reconstruct output
  *   renderer --mode hologram --lod low                   # Pi: black, mirrored, auto-rotate
  *   renderer --mode hologram --model test.glb --benchmark 20
+ *   renderer --mode viewer   --control-socket /run/astrea/viewer.sock --models-dir models   # driven by the host
  *
- * Keys: arrows = yaw/pitch, +/- = zoom, R = reset, Esc = quit.
+ * Keys: A/D = yaw, W/S = zoom, R = auto-rotation on/off, N = next model, mouse drag = yaw, Esc = quit.
  */
 #include <stdio.h>
+#include <string.h>
 
+#include "control-link.h"
 #include "frame-stats.h"
 #include "options.h"
 #include "orbit-camera.h"
@@ -21,6 +24,7 @@
 #define HOLOGRAM_AMBIENT 0.55f
 #define SCREENSHOT_WARMUP_FRAMES 5
 #define VIEWER_BACKGROUND (Color){30, 32, 38, 255}
+#define CONNECT_RETRY_S 0.5
 
 typedef struct {
     Model model;
@@ -50,8 +54,7 @@ static void NormaliseModel(Model *model, const RendererOptions *options) {
     model->transform = MatrixMultiply(centred, MatrixScale(scale, scale, scale));
 }
 
-static bool LoadScene(const RendererOptions *options, Shader shader, LoadedModel *loaded) {
-    const char *path = options->modelPath;
+static bool LoadModelFile(const char *path, const RendererOptions *options, Shader shader, LoadedModel *loaded) {
     if (!FileExists(path)) {
         TraceLog(LOG_ERROR, "RENDERER: model not found: %s", path);
         return false;
@@ -60,12 +63,72 @@ static bool LoadScene(const RendererOptions *options, Shader shader, LoadedModel
     loaded->triangles = CountTriangles(loaded->model);
     if (loaded->model.meshCount == 0 || loaded->triangles == 0) {
         TraceLog(LOG_ERROR, "RENDERER: model has no triangles: %s", path);
+        UnloadModel(loaded->model);
         return false;
     }
     for (int i = 0; i < loaded->model.materialCount; i++) loaded->model.materials[i].shader = shader;
     NormaliseModel(&loaded->model, options);
     TraceLog(LOG_INFO, "RENDERER: loaded %s (%d meshes, %d triangles)", path, loaded->model.meshCount, loaded->triangles);
     return true;
+}
+
+static bool LoadScene(const RendererOptions *options, Shader shader, LoadedModel *loaded) {
+    return LoadModelFile(options->modelPath, options, shader, loaded);
+}
+
+/* The id comes from the host, so it can only name a file inside the models directory. */
+static bool ModelIdIsSafe(const char *modelId) {
+    if (modelId[0] == '\0' || modelId[0] == '.') return false;
+    for (const char *c = modelId; *c != '\0'; c++) {
+        bool allowed = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_' || *c == '.';
+        if (!allowed) return false;
+    }
+    return true;
+}
+
+typedef struct {
+    char initial[CONTROL_MODEL_ID_BYTES];
+    char current[CONTROL_MODEL_ID_BYTES];
+    char rejected[CONTROL_MODEL_ID_BYTES];
+} ModelSelection;
+
+static void SwitchModel(const RendererOptions *options, Shader shader, ModelSelection *selection, const char *modelId, LoadedModel *loaded) {
+    if (modelId[0] == '\0' || strcmp(modelId, selection->current) == 0) return;
+    char path[512];
+    /* The model given with --model may live outside the models directory, so it is reloaded from where it came. */
+    bool isInitial = strcmp(modelId, selection->initial) == 0;
+    bool loadable = isInitial || (options->modelsDir != NULL && ModelIdIsSafe(modelId));
+    if (isInitial) snprintf(path, sizeof(path), "%s", options->modelPath);
+    else if (loadable) snprintf(path, sizeof(path), "%s/%s.glb", options->modelsDir, modelId);
+    LoadedModel next = {0};
+    if (loadable && FileExists(path) && LoadModelFile(path, options, shader, &next)) {
+        UnloadModel(loaded->model);
+        *loaded = next;
+        strcpy(selection->current, modelId);
+        selection->rejected[0] = '\0';
+    } else if (strcmp(modelId, selection->rejected) != 0) {
+        TraceLog(LOG_WARNING, "RENDERER: cannot show model '%s', keeping the current one", modelId);
+        strcpy(selection->rejected, modelId);
+    }
+}
+
+static void SendInput(ControlLink *link, uint8_t kind, uint8_t action, float value) {
+    ControlInput input = {.kind = kind, .action = action, .value = value};
+    ControlLinkSend(link, &input);
+}
+
+static void SendHeldChange(ControlLink *link, bool now, bool before, uint8_t action) {
+    if (now != before) SendInput(link, now ? CONTROL_KIND_ACTION_PRESS : CONTROL_KIND_ACTION_RELEASE, action, 0.0f);
+}
+
+static void ReportInput(ControlLink *link, const CameraInput *now, const CameraInput *before) {
+    SendHeldChange(link, now->yawLeft, before->yawLeft, CONTROL_ACTION_YAW_LEFT);
+    SendHeldChange(link, now->yawRight, before->yawRight, CONTROL_ACTION_YAW_RIGHT);
+    SendHeldChange(link, now->zoomIn, before->zoomIn, CONTROL_ACTION_ZOOM_IN);
+    SendHeldChange(link, now->zoomOut, before->zoomOut, CONTROL_ACTION_ZOOM_OUT);
+    if (now->toggleAutoRotate) SendInput(link, CONTROL_KIND_ACTION_PRESS, CONTROL_ACTION_TOGGLE_AUTO_ROTATE, 0.0f);
+    if (now->nextModel) SendInput(link, CONTROL_KIND_ACTION_PRESS, CONTROL_ACTION_NEXT_MODEL, 0.0f);
+    if (now->mouseDeltaX != 0.0f) SendInput(link, CONTROL_KIND_MOUSE_DELTA, 0, now->mouseDeltaX);
 }
 
 static Rectangle MirroredSource(RenderTexture2D target, MirrorAxis mirror) {
@@ -126,6 +189,15 @@ int main(int argc, char **argv) {
     RenderTexture2D target = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
     static FrameStats stats;
     OrbitState orbit = DefaultOrbitState();
+    bool controlled = options.controlSocketPath != NULL;
+    bool autoRotating = options.autoRotateOn;
+    ControlLink link;
+    ControlLinkInit(&link);
+    ModelSelection selection = {0};
+    strncpy(selection.initial, GetFileNameWithoutExt(options.modelPath), CONTROL_MODEL_ID_BYTES - 1);
+    strcpy(selection.current, selection.initial);
+    CameraInput previousInput = {0};
+    double nextConnectS = 0.0;
     int frame = 0;
     while (!WindowShouldClose()) {
         float deltaS = GetFrameTime();
@@ -133,8 +205,27 @@ int main(int argc, char **argv) {
             UnloadRenderTexture(target);
             target = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
         }
-        orbit.yawDeg += options.autoRotateDegPerS * deltaS;
-        orbit = ApplyLocalInput(orbit, deltaS, options.mode == MODE_VIEWER);
+        if (controlled) {
+            if (!ControlLinkIsConnected(&link) && GetTime() >= nextConnectS) {
+                if (ControlLinkTryConnect(&link, options.controlSocketPath)) previousInput = (CameraInput){0};
+                nextConnectS = GetTime() + CONNECT_RETRY_S;
+            }
+            ControlState state;
+            if (ControlLinkReceive(&link, &state)) {
+                orbit = ClampOrbitState((OrbitState){.yawDeg = state.yawDeg, .pitchDeg = state.pitchDeg, .zoom = state.zoom});
+                SwitchModel(&options, shading.shader, &selection, state.modelId, &loaded);
+            }
+            if (options.mode == MODE_VIEWER) {
+                CameraInput input = PollCameraInput(true);
+                ReportInput(&link, &input, &previousInput);
+                previousInput = input;
+            }
+        } else {
+            CameraInput input = PollCameraInput(options.mode == MODE_VIEWER);
+            if (input.toggleAutoRotate) autoRotating = !autoRotating;
+            if (autoRotating) orbit.yawDeg += options.autoRotateDegPerS * deltaS;
+            orbit = ApplyCameraInput(orbit, &input, deltaS);
+        }
         Camera3D camera = OrbitCamera(orbit);
         UpdateHeadlight(&shading, camera);
         DrawFrame(&options, &loaded, camera, target);
@@ -153,6 +244,7 @@ int main(int argc, char **argv) {
         PrintFrameStats(&stats, loaded.triangles, GetScreenWidth(), GetScreenHeight());
     }
 
+    ControlLinkClose(&link);
     UnloadRenderTexture(target);
     UnloadModel(loaded.model);
     UnloadShading(shading);
