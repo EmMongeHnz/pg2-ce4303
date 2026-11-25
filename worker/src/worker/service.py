@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import ssl
 import time
 from pathlib import Path
 
@@ -56,7 +55,7 @@ class WorkerService:
         nodeName: str,
         role: Role = Role.WORKER,
         maxGridBytes: int | None = None,
-        sslContext: ssl.SSLContext | None = None,
+        preferChacha: bool = False,
     ) -> None:
         self.nodeName = nodeName
         self.maxGridBytes = maxGridBytes if maxGridBytes is not None else DefaultMaxGridBytes()
@@ -64,7 +63,7 @@ class WorkerService:
         self._assembler = AssignAssembler()
         self._tasks: set[asyncio.Task] = set()
         self._jobSlot = asyncio.Lock()
-        self._client = NodeClient(config, nodeName, role, onMessage=self._OnMessage, onDisconnected=self._OnDisconnected, sslContext=sslContext)
+        self._client = NodeClient(config, nodeName, role, onMessage=self._OnMessage, onDisconnected=self._OnDisconnected, preferChacha=preferChacha)
 
     async def Run(self) -> None:
         await self._client.Run()
@@ -126,5 +125,5 @@ class WorkerService:
         try:
             for part in parts:
                 await connection.Send(part)
-        except (OSError, ssl.SSLError, ConnectionError) as error:
+        except (OSError, ConnectionError) as error:
             LOG.warning("could not return the result of %s: %s", parts[0].jobId, error)

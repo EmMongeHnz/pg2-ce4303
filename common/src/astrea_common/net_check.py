@@ -3,10 +3,12 @@
   astrea-net-check serve --config config.toml --expect worker-b pi:device-agent --duration 60
   astrea-net-check connect --config config.toml --name worker-b
 
-`serve` runs the hub, prints every peer with its negotiated TLS session and heartbeat round-trip time, and
-with `--expect` exits 0 once every listed NODE[:ROLE] (role defaults to worker) is connected and measured.
-`connect` dials the hub as one node and exchanges heartbeats until the hub closes the link (or for
-`--duration` seconds); it exits 0 if at least one heartbeat was echoed and the link only ended cleanly. Launch a node with `OPENSSL_CONF=pki/openssl-chacha20.cnf` to force ChaCha20-Poly1305.
+`serve` runs the hub on both ports (`hub.port` for the workers, `hub.device-port` for the device agent), prints every
+peer with its negotiated TLS session and heartbeat round-trip time, and with `--expect` exits 0 once every listed
+NODE[:ROLE] (role defaults to worker) is connected and measured. `connect` dials the hub as one node and exchanges
+heartbeats until the hub closes the link (or for `--duration` seconds); it exits 0 if at least one heartbeat was echoed
+and the link only ended cleanly. Launch a node with `--prefer-chacha20` to offer ChaCha20-Poly1305 first (the Pi).
+The TLS and the framing are done by the C daemon `astrea-netd`.
 """
 
 from __future__ import annotations
@@ -45,6 +47,25 @@ def DescribePeer(connection: Connection) -> str:
     return f"{connection.peer.node} ({connection.peer.role.value}) {connection.peer.session}, rtt {rtt}"
 
 
+class CombinedHubs:
+    """The two hub listeners seen as one: the peers of both and the rejections of both."""
+
+    def __init__(self, hubs: list[HubServer]) -> None:
+        self._hubs = hubs
+
+    @property
+    def peers(self) -> dict[tuple[str, Role], Connection]:
+        return {key: connection for hub in self._hubs for key, connection in hub.peers.items()}
+
+    @property
+    def rejections(self) -> list[str]:
+        return [reason for hub in self._hubs for reason in hub.rejections]
+
+    async def Stop(self) -> None:
+        for hub in self._hubs:
+            await hub.Stop()
+
+
 async def Serve(config: ClusterConfig, expected: set[tuple[str, Role]], duration: float, linger: float) -> int:
     async def onConnected(connection: Connection) -> None:
         Report(f"connected: {DescribePeer(connection)}")
@@ -52,9 +73,11 @@ async def Serve(config: ClusterConfig, expected: set[tuple[str, Role]], duration
     async def onLost(connection: Connection, reason: str) -> None:
         Report(f"lost: {connection.peer.node} ({connection.peer.role.value}): {reason}")
 
-    hub = HubServer(config, onPeerConnected=onConnected, onPeerLost=onLost)
-    await hub.Start()
-    Report(f"hub '{config.hub.node}' listening on {config.hub.bindAddress}:{config.hub.port}")
+    hubs = [HubServer(config, onPeerConnected=onConnected, onPeerLost=onLost, link=link) for link in ("reconstruction", "device")]
+    for hub in hubs:
+        await hub.Start()
+    hub = CombinedHubs(hubs)
+    Report(f"hub '{config.hub.node}' listening on {config.hub.bindAddress}:{config.hub.port} (workers) and :{config.hub.devicePort} (device agent)")
     deadline = time.monotonic() + duration
     try:
         while time.monotonic() < deadline:
@@ -80,15 +103,16 @@ def LinkIsHealthy(connection: Connection, heartbeatMeasured: bool) -> bool:
     return heartbeatMeasured and (connection.isOpen or connection.closeReason == HUB_CLOSED_REASON)
 
 
-async def Connect(config: ClusterConfig, nodeName: str, role: Role, duration: float | None, connectTimeout: float) -> int:
+async def Connect(config: ClusterConfig, nodeName: str, role: Role, duration: float | None, connectTimeout: float, preferChacha: bool = False) -> int:
     """`duration` None keeps the check running until the hub closes the link."""
-    client = NodeClient(config, nodeName, role)
+    client = NodeClient(config, nodeName, role, preferChacha=preferChacha)
     runner = asyncio.create_task(client.Run())
     try:
         try:
             connection = await client.WaitConnected(connectTimeout)
         except asyncio.TimeoutError:
-            Report(f"could not connect to the hub at {config.hub.address}:{config.hub.port} within {connectTimeout:.0f} s")
+            port = config.hub.devicePort if role is Role.DEVICE_AGENT else config.hub.port
+            Report(f"could not connect to the hub at {config.hub.address}:{port} within {connectTimeout:.0f} s")
             return 1
         Report(f"connected to {connection.peer.node} over {connection.peer.session}")
         deadline = None if duration is None else time.monotonic() + duration
@@ -119,6 +143,7 @@ def BuildParser() -> argparse.ArgumentParser:
     connect.add_argument("--role", default=Role.WORKER.value, choices=[role.value for role in Role if role is not Role.COORDINATOR])
     connect.add_argument("--duration", type=float, default=None, help="seconds to exchange heartbeats (default: until the hub closes the link)")
     connect.add_argument("--connect-timeout", type=float, default=DEFAULT_CONNECT_TIMEOUT_S)
+    connect.add_argument("--prefer-chacha20", action="store_true", help="offer ChaCha20-Poly1305 first (for the Pi, which has no AES instructions)")
     return parser
 
 
@@ -129,7 +154,7 @@ def Main(argv: list[str] | None = None) -> int:
         config = LoadConfig(arguments.config)
         if arguments.command == "serve":
             return asyncio.run(Serve(config, ParseExpected(arguments.expect), arguments.duration, arguments.linger))
-        return asyncio.run(Connect(config, arguments.name, Role(arguments.role), arguments.duration, arguments.connect_timeout))
+        return asyncio.run(Connect(config, arguments.name, Role(arguments.role), arguments.duration, arguments.connect_timeout, arguments.prefer_chacha20))
     except (ConfigError, ValueError, OSError) as error:
         print(f"astrea-net-check: {error}", file=sys.stderr)
         return 2
