@@ -47,6 +47,7 @@ pki/out/
 .DS_Store
 
 # Built by driver/holo-io/Makefile
-driver/holo-io/holo-reader
+libholo/build/
+libholo/build-san/
 driver/holo-io/*.dtbo
 net/build-san/

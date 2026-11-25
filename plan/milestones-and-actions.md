@@ -96,6 +96,7 @@ Módulo de kernel propio que expone los 5 botones GPIO como un char device con i
 - [x] M1.8: Estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos); Depende de: M1.4, M1.6;
 - [x] M1.9: Carga automática al arrancar; Depende de: M1.1, M1.6;
 - [x] M1.10: Lector de prueba en espacio de usuario que imprime eventos; Depende de: M1.6;
+- [x] M1.11: Biblioteca `libholo.a` en C, la única que abre `/dev/holo-input`, hace sus `ioctl` y lee sus estadísticas; el agente de la Pi y el lector pasan por ella; Depende de: M1.6, M1.7, M1.8;
 
 **Criterio de aceptación/éxito**
 
@@ -118,7 +119,7 @@ Módulo de kernel propio que expone los 5 botones GPIO como un char device con i
   - Carga al arrancar: tras `sudo make install` y `dtoverlay=holo-io` bajo `[all]` en `config.txt`, el módulo y `/dev/holo-input` aparecen solos al reiniciar.
   - Las repeticiones se vieron (`repeats=18`), pero no se midió el periodo ni que no llegue un `repeat` después de un `release`.
 - Mantenimiento: el módulo se instala para el kernel que corre al ejecutar `make install`; tras actualizar el kernel con `apt` hay que repetir `make clean && make && sudo make install`, o `modinfo holo-io` no lo encuentra y no se carga solo. La Pi mostró avisos `Undervoltage detected!` durante las pruebas, sin efecto visible en los resultados.
-- Criterio «100 pulsaciones = 100 eventos»: se mide en la diferencia de eventos `PRESS` de un solo botón, mejor el de autorrotación porque no repite; `driver/holo-io/check-presses.sh` compara lo que ve `holo-reader` con `presses` en sysfs y exige `dropped = 0`. Las estadísticas están en `/sys/class/misc/holo-input/device/stats/`.
+- Criterio «100 pulsaciones = 100 eventos»: se mide en la diferencia de eventos `PRESS` de un solo botón, mejor el de autorrotación porque no repite; `libholo/tools/check-presses.sh` compara lo que ve `holo-reader` con `presses` del driver y exige `dropped = 0` (ambos pasan por `libholo`). Las estadísticas están en `/sys/class/misc/holo-input/device/stats/`.
 - Carga automática (M1.9): el overlay crea el nodo `holo-io` y el módulo se enlaza por `MODULE_DEVICE_TABLE(of)`. Se instala con `sudo make install` (módulo, regla udev y `holo-io.dtbo`) y se añade `dtoverlay=holo-io` a `/boot/firmware/config.txt`.
 - Entregables: `driver/holo-io/` (`holo-core.c`, `holo-buttons.c`, `holo-io-overlay.dts`, `Makefile`), lector de prueba, pruebas en `tests/`.
 
@@ -312,7 +313,7 @@ El enunciado oficial es más estricto que el resumen `especificacion.md`. La pro
 
 - [x] Driver propio, módulo de kernel en C verificable con `lsmod`, sin drivers del sistema para la interfaz (M1).
 - [x] Red segura y cifrada en C (`net/`): TLS 1.3 con autenticación mutua, framing, latidos y reconexión, sin sockets de red en Python. Probada en las máquinas reales con todo el flujo, desde la captura hasta los botones.
-- [ ] **Biblioteca (`.a`) en C, la única que habla con el driver** (10 % de la nota): `libholo.a` con funciones tipo `HoloOpen`, `HoloRead`, `HoloClose`, `HoloSetDebounce`, `HoloStats`. Hoy el agente de la Pi lee `/dev/holo-input` directamente; debe pasar a usar la biblioteca, igual que `holo-reader`.
+- [x] **Biblioteca (`.a`) en C, la única que habla con el driver** (10 % de la nota): `libholo/` genera `libholo.a` con `HoloOpen`, `HoloClose`, `HoloReadEvent`, `HoloGet/SetDebounceMs`, `HoloGet/SetRepeatMs`, `HoloReadStats` y `HoloActionOf` (MoveRight, MoveLeft, ZoomIn, ZoomOut, ToggleAutoRotate). El agente en C y `holo-reader` pasan por ella y una prueba comprueba que ningún otro código usa los `ioctl` ni el sysfs del driver. Probada con un FIFO y con los sanitizadores (`tests/unit/test_libholo.py`) y con el driver real en la Pi 3: `holo-reader -g` leyó `debounce_ms=10 repeat_ms=50`, `-s` leyó los contadores y `check-presses.sh 100` dio lector 100, driver 100 y `dropped` 0 (`irqs=3512 bounces_filtered=3129 presses=192 releases=192 repeats=574`), todo a través de `libholo`. El agente en C con la biblioteca también funcionó en la Pi con los botones reales: leyó `/dev/holo-input` con `libholo`, se conectó al host con `TLSv1.3 TLS_CHACHA20_POLY1305_SHA256`, instaló los tres modelos enviados y reenvió pulsaciones de los cinco botones (derecha, izquierda, zoom +, zoom − y autorrotación), y el renderer de la Pi cargó el modelo recibido.
 - [ ] Monitor del sistema visible en cada nodo durante la demostración (`htop` o similar en host, laptop B y Pi).
 - [ ] Sin `segmentation fault`: probado con AddressSanitizer y UndefinedBehaviorSanitizer en la red y el agente; pendiente en el renderer.
 - [ ] Hardware: diagramas de los componentes, justificación de GPIO y prototipo presentable.

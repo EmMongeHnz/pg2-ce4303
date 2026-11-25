@@ -1,15 +1,20 @@
 # Secure network components in C: the static library, the daemon used by the Python nodes and the device agent
-# (the agent reads /dev/holo-input through the record format of driver/holo-io/holo-event.h).
+# (the agent reads /dev/holo-input only through libholo, the library in ../libholo).
 #   make            # build into net/build
 #   make SAN=1      # the same with AddressSanitizer and UndefinedBehaviorSanitizer (used to look for memory errors)
 #   make clean
 # Needs a C compiler, make, libssl-dev (sudo apt install build-essential libssl-dev).
 CC ?= gcc
 BUILD := build
-CFLAGS := -std=gnu11 -Wall -Wextra -O2 -g -pthread -Isrc -I../renderer/src -I../driver/holo-io
+LIBHOLO_DIR := build
+LIBHOLO := ../libholo/$(LIBHOLO_DIR)/libholo.a
+CFLAGS := -std=gnu11 -Wall -Wextra -O2 -g -pthread -Isrc -I../renderer/src -I../driver/holo-io -I../libholo/include
 ifdef SAN
 CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 BUILD := build-san
+LIBHOLO_DIR := build-san
+LIBHOLO := ../libholo/$(LIBHOLO_DIR)/libholo.a
+LIBHOLO_FLAGS := SAN=1
 endif
 LDLIBS := -lssl -lcrypto -pthread
 
@@ -32,7 +37,10 @@ $(BUILD)/libastrea-net.a: $(LIB_OBJECTS)
 $(BUILD)/astrea-netd: $(BUILD)/astrea-netd.o $(BUILD)/libastrea-net.a
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
-$(BUILD)/astrea-device-agent: $(AGENT_OBJECTS) $(BUILD)/libastrea-net.a
+$(LIBHOLO): $(wildcard ../libholo/src/*.c ../libholo/include/*.h)
+	$(MAKE) -C ../libholo $(LIBHOLO_FLAGS) $(LIBHOLO_DIR)/libholo.a
+
+$(BUILD)/astrea-device-agent: $(AGENT_OBJECTS) $(BUILD)/libastrea-net.a $(LIBHOLO)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 clean:
