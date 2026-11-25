@@ -24,6 +24,8 @@ cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build 
                                           # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
+OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-device-agent --name pi
+                                          # Pi: forwards /dev/holo-input to the host and feeds the hologram renderer (--renderer-socket, --models-dir)
 dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 ```
 

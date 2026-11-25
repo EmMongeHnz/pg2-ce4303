@@ -129,6 +129,13 @@ Contrato entre el proceso Python de una máquina y su `renderer` (`--control-soc
 - **`modelId`:** el renderer carga `<--models-dir>/<modelId>.glb`, salvo el modelo inicial (el nombre de `--model` sin `.glb`), que recarga desde la ruta con la que arrancó aunque no esté en ese directorio; el id solo admite letras, dígitos, `-`, `_` y `.` (sin empezar por punto), así que no puede salir del directorio. Si el archivo no existe conserva el modelo actual y lo avisa una sola vez. Un id vacío no cambia nada.
 - **Lado Python:** `coordinator.renderer_bridge.RendererBridge` atiende el socket, alimenta a `CameraControl` y envía el estado a ≤60 Hz (descarta envíos si el renderer va atrasado: gana el último).
 
+### Comportamiento del `device-agent` (N2 y N3)
+
+- **`INPUT_EVENT`:** cada registro de `/dev/holo-input` se envía tal cual (`source`, `code`, `value`, `timestampNs` de la Pi). El agente no interpreta los botones: el host los convierte en acciones de cámara. Con el enlace caído los eventos se descartan.
+- **`CAMERA_STATE`:** se entrega al renderer local como `ControlState`. El agente guarda el último y se lo envía a un renderer que se conecta o se reconecta.
+- **`MODEL_PUSH`:** un modelo es válido si el id cumple `[A-Za-z0-9_-][A-Za-z0-9_.-]*` con 31 bytes como máximo, `totalSize` ≤ 128 MiB y el SHA-256 de lo transmitido coincide. Si `compression = zstd` se descomprime con tope de tamaño. Se instala como `<models-dir>/<modelId>.glb` (archivo temporal más `rename`, así el renderer nunca ve un archivo a medias). Si un modelo no pasa las comprobaciones se descarta y se registra. Una transferencia nueva del mismo id reemplaza a una incompleta.
+- **Tras instalar un modelo** el agente reenvía el último `CAMERA_STATE` si ese estado nombra el modelo, porque el renderer solo reintenta cargar cuando recibe un estado.
+
 ### Trabajos de reconstrucción (N1)
 
 - **`params`** de `JOB_ASSIGN`: `preprocess` (mapa con campos de `PreprocessParams`; los que faltan toman su valor por defecto y una clave desconocida se rechaza), `weights` y `bilinear` (booleanos). `truncationMm` va aparte, en el mismo mensaje.
