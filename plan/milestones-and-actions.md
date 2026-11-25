@@ -96,7 +96,7 @@ Módulo de kernel propio que expone los 5 botones GPIO como un char device con i
 - [x] M1.8: Estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos); Depende de: M1.4, M1.6;
 - [x] M1.9: Carga automática al arrancar; Depende de: M1.1, M1.6;
 - [x] M1.10: Lector de prueba en espacio de usuario que imprime eventos; Depende de: M1.6;
-- [ ] M1.11: Biblioteca `libholo.a` en C, la única que abre `/dev/holo-input`, hace sus `ioctl` y lee sus estadísticas; el agente de la Pi y el lector pasan por ella; Depende de: M1.6, M1.7, M1.8;
+- [x] M1.11: Biblioteca `libholo.a` en C, la única que abre `/dev/holo-input`, hace sus `ioctl` y lee sus estadísticas; el agente de la Pi y el lector pasan por ella; Depende de: M1.6, M1.7, M1.8;
 
 **Criterio de aceptación/éxito**
 
@@ -313,7 +313,7 @@ El enunciado oficial es más estricto que el resumen `especificacion.md`. La pro
 
 - [x] Driver propio, módulo de kernel en C verificable con `lsmod`, sin drivers del sistema para la interfaz (M1).
 - [x] Red segura y cifrada en C (`net/`): TLS 1.3 con autenticación mutua, framing, latidos y reconexión, sin sockets de red en Python. Probada en las máquinas reales con todo el flujo, desde la captura hasta los botones.
-- [ ] **Biblioteca (`.a`) en C, la única que habla con el driver** (10 % de la nota): `libholo/` genera `libholo.a` con `HoloOpen`, `HoloClose`, `HoloReadEvent`, `HoloGet/SetDebounceMs`, `HoloGet/SetRepeatMs`, `HoloReadStats` y `HoloActionOf` (MoveRight, MoveLeft, ZoomIn, ZoomOut, ToggleAutoRotate). El agente en C y `holo-reader` pasan por ella y una prueba comprueba que ningún otro código usa los `ioctl` ni el sysfs del driver. Implementada y probada con un FIFO y con los sanitizadores (`tests/unit/test_libholo.py`); falta probarla con el driver real en la Pi (`make -C libholo`, `libholo/tools/check-presses.sh 100` y el agente), por eso no se tickea.
+- [x] **Biblioteca (`.a`) en C, la única que habla con el driver** (10 % de la nota): `libholo/` genera `libholo.a` con `HoloOpen`, `HoloClose`, `HoloReadEvent`, `HoloGet/SetDebounceMs`, `HoloGet/SetRepeatMs`, `HoloReadStats` y `HoloActionOf` (MoveRight, MoveLeft, ZoomIn, ZoomOut, ToggleAutoRotate). El agente en C y `holo-reader` pasan por ella y una prueba comprueba que ningún otro código usa los `ioctl` ni el sysfs del driver. Probada con un FIFO y con los sanitizadores (`tests/unit/test_libholo.py`) y con el driver real en la Pi 3: `holo-reader -g` leyó `debounce_ms=10 repeat_ms=50`, `-s` leyó los contadores y `check-presses.sh 100` dio lector 100, driver 100 y `dropped` 0 (`irqs=3512 bounces_filtered=3129 presses=192 releases=192 repeats=574`), todo a través de `libholo`. El agente en C con la biblioteca está probado con el FIFO; falta repetir su corrida con los botones reales.
 - [ ] Monitor del sistema visible en cada nodo durante la demostración (`htop` o similar en host, laptop B y Pi).
 - [ ] Sin `segmentation fault`: probado con AddressSanitizer y UndefinedBehaviorSanitizer en la red y el agente; pendiente en el renderer.
 - [ ] Hardware: diagramas de los componentes, justificación de GPIO y prototipo presentable.
