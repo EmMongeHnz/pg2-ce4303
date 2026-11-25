@@ -153,7 +153,7 @@ Todo el tráfico entre los 3 nodos va por TCP con TLS 1.3 y autenticación mutua
 - M2.3: `astrea_common.framing`: `length` cuenta `type` + payload, tope de 4 MiB (los emisores apuntan a ≤ 1 MiB por trama), decodificador incremental probado con cortes en cualquier posición y flujos corruptos.
 - M2.4: `astrea_common.messages`: validación de campos, reglas de quién envía qué por rol, `MODEL_PUSH` en chunks con SHA-256 y bloques de arrays con zstd acotado. `JOB_ASSIGN` y `JOB_RESULT` ya traen sus campos definidos para M4. `ROTATE` / `ROTATE_DONE` existen pero el hub los rechaza.
 - M2.5: `config.toml` en la raíz (nodos, roles, rutas TLS con `{node}`, parámetros de heartbeat), validado por `astrea_common.config`.
-- M2.6: topología hub-and-spoke (el host escucha, worker B y la Pi se conectan) en C (`net/`: `astrea-netd` y `libastrea-net.a`, con `astrea_common.link` como cliente Python del demonio); `astrea-net-check serve|connect` verifica los enlaces. Validado en loopback con 3 nodos y certificados distintos, y en las máquinas reales: host (PC), laptop B (worker) y Pi 3 (worker y device-agent) conectados a la vez con `astrea-net-check`. La Pi negocia ChaCha20-Poly1305 con `--prefer-chacha20` (pasos en `docs/protocol.md`, sección 10). Desde la migración a C, las 21 pruebas del enlace, las 8 de TLS y las del agente y de `astrea-host` pasan contra el demonio en C, y también con AddressSanitizer y UndefinedBehaviorSanitizer (`make -C net SAN=1`) sin errores ni fugas; falta repetir el enlace en las máquinas reales.
+- M2.6: topología hub-and-spoke (el host escucha, worker B y la Pi se conectan) en C (`net/`: `astrea-netd` y `libastrea-net.a`, con `astrea_common.link` como cliente Python del demonio); `astrea-net-check serve|connect` verifica los enlaces. Validado en loopback con 3 nodos y certificados distintos, y en las máquinas reales: host (PC), laptop B (worker) y Pi 3 (worker y device-agent) conectados a la vez con `astrea-net-check`. La Pi negocia ChaCha20-Poly1305 con `--prefer-chacha20` (pasos en `docs/protocol.md`, sección 10). Desde la migración a C, las 21 pruebas del enlace, las 8 de TLS y las del agente y de `astrea-host` pasan contra el demonio en C, y también con AddressSanitizer y UndefinedBehaviorSanitizer (`make -C net SAN=1`) sin errores ni fugas; y el equipo lo probó en las máquinas reales (host, laptop B y Pi 3): red segura con el demonio en C, captura de una figura nueva, reconstrucción distribuida, `astrea-host` con el agente en C de la Pi, modelo recibido por `MODEL_PUSH` y botones moviendo el holograma, todo funcionando. Sigue pendiente la captura de Wireshark.
 - M2.7: especificación en `docs/protocol.md` (versionada con `git add -f`), con la guía de prueba en las máquinas reales.
 - M2.8: certificados de ejemplo en `pki/example/` (CA y nodos con claves de prueba, agregados con `git add -f`).
 - Criterios: el rechazo de clientes sin certificado o de otra CA, TLS 1.3 y el intercambio de `HEARTBEAT` están cubiertos por `tests/unit/test_tls.py` y `tests/unit/test_secure_link.py` (incluye un proxy que comprueba que lo único en la red son registros TLS). Los 3 nodos reales ya se conectan e intercambian `HEARTBEAT`; sigue sin marcarse Wireshark (captura en el host) y el rechazo con `openssl s_client` desde una máquina real (sección 10 de `docs/protocol.md`). El protocolo queda propuesto como congelado, pendiente de acuerdo del equipo.
@@ -244,7 +244,7 @@ Un solo binario de visualización en PC y en la Pi, con el host como fuente de v
 **Criterio de aceptación/éxito**
 
 - [x] Cumple que el mismo modelo se ve en el visor y en la Pi, recibido cifrado una sola vez (1,3,5,6)
-- [ ] Cumple que los botones rotan y hacen zoom en ambos sincronizados (2,5,6)
+- [x] Cumple que los botones rotan y hacen zoom en ambos sincronizados (2,5,6)
 - [ ] Cumple latencia botón → holograma < 100 ms, medida y documentada (5,6)
 
 **Notas**
@@ -311,7 +311,7 @@ Cubrir todas las secciones que pide `especificacion.md`. Avanza en paralelo desd
 El enunciado oficial es más estricto que el resumen `especificacion.md`. La propuesta del holograma fue aprobada por el profesor; no se exige OpenMPI. Entrega: **2 de diciembre de 2026, 13:00, por TecDigital**, sin prórroga.
 
 - [x] Driver propio, módulo de kernel en C verificable con `lsmod`, sin drivers del sistema para la interfaz (M1).
-- [x] Red segura y cifrada en C (`net/`): TLS 1.3 con autenticación mutua, framing, latidos y reconexión, sin sockets de red en Python.
+- [x] Red segura y cifrada en C (`net/`): TLS 1.3 con autenticación mutua, framing, latidos y reconexión, sin sockets de red en Python. Probada en las máquinas reales con todo el flujo, desde la captura hasta los botones.
 - [ ] **Biblioteca (`.a`) en C, la única que habla con el driver** (10 % de la nota): `libholo.a` con funciones tipo `HoloOpen`, `HoloRead`, `HoloClose`, `HoloSetDebounce`, `HoloStats`. Hoy el agente de la Pi lee `/dev/holo-input` directamente; debe pasar a usar la biblioteca, igual que `holo-reader`.
 - [ ] Monitor del sistema visible en cada nodo durante la demostración (`htop` o similar en host, laptop B y Pi).
 - [ ] Sin `segmentation fault`: probado con AddressSanitizer y UndefinedBehaviorSanitizer en la red y el agente; pendiente en el renderer.
