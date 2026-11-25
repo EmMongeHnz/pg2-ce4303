@@ -85,7 +85,7 @@ RendererLink *RendererLinkStart(const char *socketPath, char *error, size_t erro
         return NULL;
     }
     strcpy(address.sun_path, socketPath);
-    snprintf(link->path, sizeof(link->path), "%s", socketPath);
+    memcpy(link->path, socketPath, strlen(socketPath) + 1);
     link->clientFd = -1;
     pthread_mutex_init(&link->mutex, NULL);
     unlink(socketPath);

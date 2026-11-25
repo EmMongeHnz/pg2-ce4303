@@ -22,10 +22,10 @@
 #include "astrea-config.h"
 #include "astrea-link.h"
 #include "astrea-log.h"
-#include "holo-event.h"
+#include "holo.h"
 
 #define DEVICE_RETRY_S 2
-#define READ_BATCH 16
+#define DEVICE_POLL_MS 200
 
 typedef struct {
     Node *node;
@@ -45,15 +45,6 @@ static void OnSignal(int signalNumber) {
     if (gAgent.node != NULL) NodeStop(gAgent.node);
 }
 
-static const char *CodeName(unsigned code) {
-    static const char *const NAMES[] = {"?", "right", "left", "zoom-in", "zoom-out", "autorotate"};
-    return code < sizeof(NAMES) / sizeof(NAMES[0]) ? NAMES[code] : "?";
-}
-
-static const char *ValueName(int value) {
-    return value == HOLO_VALUE_PRESS ? "press" : value == HOLO_VALUE_RELEASE ? "release" : value == HOLO_VALUE_REPEAT ? "repeat" : "?";
-}
-
 static void ForwardEvent(const struct HoloEvent *event) {
     MpWriter payload;
     MpWriterInit(&payload);
@@ -70,38 +61,26 @@ static void ForwardEvent(const struct HoloEvent *event) {
     MpWriterFree(&payload);
     if (sent) {
         atomic_fetch_add(&gAgent.forwarded, 1);
-        if (event->value != HOLO_VALUE_REPEAT) LOG_INFO("sent to the host: %s %s", CodeName(event->code), ValueName(event->value));
+        if (event->value != HOLO_VALUE_REPEAT) LOG_INFO("sent to the host: %s %s", HoloButtonName(event->code), HoloValueName(event->value));
         return;
     }
     unsigned long dropped = atomic_fetch_add(&gAgent.dropped, 1) + 1;
     if (dropped == 1 || dropped % 50 == 0) LOG_WARN("not connected to the host: %lu button events dropped so far", dropped);
 }
 
-static bool ReadDevice(int fd) {
-    unsigned char buffer[READ_BATCH * sizeof(struct HoloEvent) * 2];
-    size_t leftover = 0;
+/* The agent never touches the driver itself: everything goes through libholo. */
+static bool ReadDevice(HoloDevice *device) {
     while (!atomic_load(&gAgent.stopping)) {
-        struct pollfd wait = {fd, POLLIN, 0};
-        if (poll(&wait, 1, 200) <= 0) continue;
-        ssize_t received = read(fd, buffer + leftover, READ_BATCH * sizeof(struct HoloEvent));
-        if (received < 0) {
-            if (errno == EAGAIN || errno == EINTR) continue;
+        struct HoloEvent event;
+        HoloStatus status = HoloReadEvent(device, DEVICE_POLL_MS, &event);
+        if (status == HOLO_OK) {
+            ForwardEvent(&event);
+        } else if (status == HOLO_CLOSED) {
+            usleep(50000);
+        } else if (status == HOLO_ERROR) {
             LOG_WARN("lost the input device: %s", strerror(errno));
             return false;
         }
-        if (received == 0) {
-            usleep(50000);
-            continue;
-        }
-        size_t available = leftover + (size_t)received;
-        size_t usable = available - available % sizeof(struct HoloEvent);
-        for (size_t offset = 0; offset < usable; offset += sizeof(struct HoloEvent)) {
-            struct HoloEvent event;
-            memcpy(&event, buffer + offset, sizeof(event));
-            ForwardEvent(&event);
-        }
-        leftover = available - usable;
-        memmove(buffer, buffer + usable, leftover);
     }
     return true;
 }
@@ -109,15 +88,15 @@ static bool ReadDevice(int fd) {
 static void *DeviceMain(void *unused) {
     (void)unused;
     while (!atomic_load(&gAgent.stopping)) {
-        int fd = open(gAgent.devicePath, O_RDONLY | O_NONBLOCK);
-        if (fd < 0) {
+        HoloDevice *device = NULL;
+        if (HoloOpen(gAgent.devicePath, &device) != HOLO_OK) {
             LOG_WARN("cannot open %s (%s), retrying; another process may be holding it (see: sudo fuser -v %s)", gAgent.devicePath, strerror(errno), gAgent.devicePath);
             for (int waited = 0; waited < DEVICE_RETRY_S * 10 && !atomic_load(&gAgent.stopping); waited++) usleep(100000);
             continue;
         }
         LOG_INFO("reading %s", gAgent.devicePath);
-        ReadDevice(fd);
-        close(fd);
+        ReadDevice(device);
+        HoloClose(device);
         for (int waited = 0; waited < DEVICE_RETRY_S * 10 && !atomic_load(&gAgent.stopping); waited++) usleep(100000);
     }
     return NULL;

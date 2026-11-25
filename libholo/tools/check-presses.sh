@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 # Checks "N presses give exactly N events": press ONE button N times (the autorotate button does not repeat)
-# and compares what holo-reader saw with the driver statistics in sysfs.
+# and compares what holo-reader saw with the driver statistics. Everything goes through libholo.
 #
-# Usage: driver/holo-io/check-presses.sh [N]   (default 100; needs the module loaded)
+# Usage: libholo/tools/check-presses.sh [N]   (default 100; needs the module loaded and `make -C libholo`)
 
 set -euo pipefail
 
 PRESSES="${1:-100}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATS=/sys/class/misc/holo-input/device/stats
+READER="${HOLO_READER:-$HERE/../build/holo-reader}"
+
+[[ -x "$READER" ]] || { echo "check-presses: $READER not found, run: make -C libholo" >&2; exit 1; }
 
 Stat() {
-    cat "$STATS/$1"
+    "$READER" -s | sed -n "s/^$1=//p"
 }
-
-[[ -d "$STATS" ]] || { echo "check-presses: $STATS not found, is holo-io loaded?" >&2; exit 1; }
 
 pressesBefore=$(Stat presses)
 dropsBefore=$(Stat dropped)
 echo "Press one button $PRESSES times..."
-summary=$("$HERE/holo-reader" -p "$PRESSES" | tail -n 1)
+summary=$("$READER" -p "$PRESSES" | tail -n 1)
 readerPresses=$(sed -n 's/.*presses=\([0-9]*\).*/\1/p' <<< "$summary")
 sysfsPresses=$(( $(Stat presses) - pressesBefore ))
 dropped=$(( $(Stat dropped) - dropsBefore ))
 
-echo "reader: $readerPresses presses | sysfs: $sysfsPresses presses | dropped: $dropped"
+echo "reader: $readerPresses presses | driver: $sysfsPresses presses | dropped: $dropped"
 echo "irqs=$(Stat irqs) bounces_filtered=$(Stat bounces_filtered) presses=$(Stat presses) releases=$(Stat releases) repeats=$(Stat repeats)"
 if [[ "$readerPresses" -eq "$PRESSES" && "$sysfsPresses" -eq "$PRESSES" && "$dropped" -eq 0 ]]; then
     echo "OK"

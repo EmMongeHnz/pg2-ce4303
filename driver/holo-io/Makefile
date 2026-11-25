@@ -1,5 +1,5 @@
-# Out-of-tree build of the holo-io kernel module, its overlay and the test reader.
-#   make                      # module, overlay and reader against the running kernel (on the Pi)
+# Out-of-tree build of the holo-io kernel module and its overlay (the user-space side is the library in ../libholo).
+#   make                      # module and overlay against the running kernel (on the Pi)
 #   make KDIR=/path/to/kernel # against another kernel tree or headers
 #   sudo make install         # module, udev rule and overlay (then add dtoverlay=holo-io to config.txt)
 #   make clean
@@ -9,7 +9,7 @@ holo-io-y := holo-core.o holo-buttons.o
 KDIR ?= /lib/modules/$(shell uname -r)/build
 OVERLAY_DIR ?= /boot/firmware/overlays
 
-all: modules overlay holo-reader
+all: modules overlay
 
 modules:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
@@ -18,9 +18,6 @@ overlay: holo-io.dtbo
 
 holo-io.dtbo: holo-io-overlay.dts
 	dtc -@ -I dts -O dtb -o $@ $<
-
-holo-reader: holo-reader.c holo-event.h holo-ioctl.h
-	$(CC) -Wall -Wextra -O2 -o $@ $<
 
 install: all
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules_install
@@ -31,4 +28,4 @@ install: all
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
-	rm -f holo-io.dtbo holo-reader
+	rm -f holo-io.dtbo

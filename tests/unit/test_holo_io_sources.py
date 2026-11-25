@@ -1,4 +1,4 @@
-"""Checks on the holo-io sources that need no kernel: the user-space reader, the timing ranges and the overlay."""
+"""Checks on the holo-io sources that need no kernel: the library and its reader, the timing ranges and the overlay."""
 
 import re
 import shutil
@@ -51,9 +51,10 @@ def test_overlay_uses_the_documented_pins():
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc is not installed")
-def test_the_reader_compiles_without_warnings(tmp_path):
+def test_the_library_and_the_reader_compile_without_warnings(tmp_path):
+    library = DRIVER.parents[1] / "libholo"
     subprocess.run(
-        ["gcc", "-Wall", "-Wextra", "-Werror", f"-I{DRIVER}", "-o", str(tmp_path / "holo-reader"), str(DRIVER / "holo-reader.c")],
+        ["gcc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", f"-I{library / 'include'}", f"-I{DRIVER}", "-o", str(tmp_path / "holo-reader"), str(library / "tools" / "holo-reader.c"), str(library / "src" / "holo.c")],
         check=True,
         capture_output=True,
     )
