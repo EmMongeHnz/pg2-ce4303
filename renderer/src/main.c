@@ -23,7 +23,6 @@
 #define VIEWER_AMBIENT 0.35f
 #define HOLOGRAM_AMBIENT 0.55f
 #define SCREENSHOT_WARMUP_FRAMES 5
-#define VIEWER_BACKGROUND (Color){30, 32, 38, 255}
 #define CONNECT_RETRY_S 0.5
 
 typedef struct {
@@ -142,9 +141,8 @@ static Rectangle MirroredSource(RenderTexture2D target, MirrorAxis mirror) {
 }
 
 static void DrawFrame(const RendererOptions *options, LoadedModel *loaded, Camera3D camera, RenderTexture2D target) {
-    Color background = options->mode == MODE_HOLOGRAM ? BLACK : VIEWER_BACKGROUND;
     BeginTextureMode(target);
-    ClearBackground(background);
+    ClearBackground(BLACK);
     BeginMode3D(camera);
     DrawModel(loaded->model, Vector3Zero(), 1.0f, WHITE);
     EndMode3D();
