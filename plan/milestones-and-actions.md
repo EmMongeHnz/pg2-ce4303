@@ -291,6 +291,7 @@ Cubrir todas las secciones que pide `especificacion.md`. Avanza en paralelo desd
 
 **Notas**
 
+- Avance: borrador del paper en `docs/paper/main.tex` (LaTeX IEEEtran para Overleaf, agregado con `git add -f`), con las secciones del enunciado y los cuatro diagramas en TikZ. Sin compilar todavía; faltan los datos del equipo, las evidencias de aprendizaje continuo y los resultados en hardware (marcados como `\pendiente`), por eso no se marca nada.
 - Entregables: paper en `docs/`, diagramas, README; junto con el código fuente y los archivos de ejecución (certificados de ejemplo, `config.toml`, overlay).
 
 ---

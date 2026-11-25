@@ -1,0 +1,637 @@
+% AstreaView - Documentacion del Proyecto Grupal 2 (CE4303), formato IEEE-Trans.
+% Overleaf: New Project > Blank Project, pegar todo en main.tex y compilar con pdfLaTeX.
+% Todo lo marcado con \pendiente{...} (en rojo) hay que completarlo antes de entregar.
+\documentclass[journal]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands,es-tabla]{babel}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\pendiente}[1]{\textcolor{red}{[PENDIENTE: #1]}}
+
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\tikzset{
+  caja/.style={draw, rounded corners=2pt, align=center, font=\footnotesize,
+               minimum height=7mm, inner sep=3pt, fill=white},
+  grupo/.style={draw, dashed, rounded corners=4pt, inner sep=6pt, fill=black!4},
+  flecha/.style={-{Stealth[length=2mm]}, thick},
+  doble/.style={{Stealth[length=2mm]}-{Stealth[length=2mm]}, thick},
+  etiqueta/.style={font=\scriptsize, fill=white, inner sep=1pt, align=center}
+}
+
+\begin{document}
+
+\title{AstreaView: escaneo 3D distribuido con visualización holográfica}
+
+\author{Emerson~Monge~H.,
+        Emanuel~\pendiente{apellido},
+        Gabriel~\pendiente{nombre completo y confirmar}%
+\thanks{Proyecto Grupal 2, curso Principios de Sistemas Operativos (CE4303),
+Ingeniería en Computadores, Tecnológico de Costa Rica \pendiente{confirmar datos,
+profesor, semestre y carnés}.}}
+
+\markboth{Principios de Sistemas Operativos -- Proyecto Grupal 2}{AstreaView}
+\maketitle
+
+\begin{abstract}
+AstreaView es un sistema que escanea un objeto con la cámara TrueDepth de un
+iPhone, reconstruye su geometría repartiendo el cálculo entre varios nodos y
+muestra el resultado en una computadora y en una pantalla de tipo
+\emph{Pepper's Ghost}. El proyecto integra un módulo de kernel propio para la
+lectura de botones por GPIO, una reconstrucción volumétrica TSDF distribuida con
+una fusión equivalente a la de un solo nodo y una red cifrada con TLS~1.3 y
+autenticación mutua. Este documento describe el diseño, el ambiente de
+desarrollo, el uso del sistema y los resultados obtenidos hasta la fecha.
+\end{abstract}
+
+\begin{IEEEkeywords}
+sistemas operativos, controlador de dispositivo, GPIO, procesamiento
+distribuido, TSDF, reconstrucción 3D, TLS 1.3, Raspberry Pi.
+\end{IEEEkeywords}
+
+% =====================================================================
+\section{Introducción}
+
+\IEEEPARstart{U}{n} sistema operativo media entre las aplicaciones y el hardware:
+administra interrupciones, memoria, concurrencia y comunicación entre procesos y
+equipos. El objetivo del proyecto es implementar las capas necesarias para que
+una aplicación interactúe con hardware a través del sistema operativo, cubriendo
+cuatro áreas: un controlador propio de entrada y salida, un componente de
+hardware, procesamiento distribuido en al menos tres nodos y cifrado de toda la
+información que viaja por la red.
+
+AstreaView responde a esas áreas con un escáner 3D de mesa. El objeto se coloca
+sobre un plato que se gira a mano y que tiene en el borde un anillo de
+marcadores ArUco. Un iPhone transmite imágenes de color y profundidad
+(RGB-D), una computadora calcula la pose de cada vista, tres nodos fusionan las
+vistas en un volumen común y el modelo resultante se visualiza en la
+computadora y en un holograma controlado desde una Raspberry~Pi~3.
+
+\subsection{Controladores y manejo de interrupciones}
+En Linux un controlador puede cargarse como módulo de kernel y exponer un
+dispositivo de caracteres en \texttt{/dev}, que los procesos usan con las
+llamadas \texttt{open}, \texttt{read}, \texttt{poll} e \texttt{ioctl}
+\cite{ldd3}. El hardware avisa de sus cambios con interrupciones, cuyo manejador
+debe ser breve. Los botones mecánicos producen rebotes, por lo que se necesita un
+filtro temporal (\emph{debounce}), implementado aquí con temporizadores de alta
+resolución (\texttt{hrtimer}).
+
+\subsection{Reconstrucción volumétrica}
+Una función de distancia con signo truncada (TSDF) guarda en cada vóxel la
+distancia a la superficie más cercana y un peso de confianza
+\cite{curless,kinectfusion}. Al ser un promedio ponderado, varios volúmenes
+parciales $d_i$ con pesos $w_i$ se combinan como
+\begin{equation}
+  D = \frac{\sum_i w_i d_i}{\sum_i w_i}, \qquad W = \sum_i w_i ,
+\end{equation}
+lo que permite repartir las vistas entre nodos. La superficie se extrae con
+\emph{marching cubes} \cite{marching}, se suaviza con el filtro de Taubin
+\cite{taubin} y se simplifica con métricas de error cuádrico \cite{quadric}.
+
+\subsection{Estimación de pose con marcadores}
+Los marcadores ArUco son patrones cuadrados con identificador único
+\cite{aruco}. Conocida la posición de cada marcador en el plato, la pose de la
+cámara se obtiene resolviendo el problema perspectiva-$n$-puntos con todos los
+marcadores visibles, aun cuando el objeto tape algunos.
+
+\subsection{Comunicación segura}
+TLS~1.3 \cite{tls13} ofrece cifrado autenticado y secreto hacia adelante. Con
+autenticación mutua (mTLS) cada extremo presenta un certificado firmado por una
+autoridad propia. Se prefiere ChaCha20-Poly1305 \cite{chacha} porque la
+Raspberry~Pi~3 no acelera AES por hardware.
+
+% =====================================================================
+\section{Ambiente de desarrollo}
+
+\subsection{Hardware}
+\begin{itemize}
+  \item Computadora anfitriona (\emph{host}): captura, coordinación, fusión,
+        mallado y visor. \pendiente{modelo, CPU, RAM y sistema operativo}
+  \item Computadora \emph{worker B}: fusión parcial.
+        \pendiente{modelo, CPU, RAM y sistema operativo}
+  \item Raspberry~Pi~3 con Raspberry Pi OS Lite de 64 bits: controlador,
+        holograma y fusión ligera. \pendiente{versión exacta del kernel}
+  \item iPhone con cámara TrueDepth. \pendiente{modelo}
+  \item Cinco pulsadores, plato giratorio manual de 180~mm, monitor HDMI y panel
+        transparente a $45^{\circ}$.
+\end{itemize}
+
+\subsection{Software y bibliotecas}
+La Tabla~\ref{tab:software} resume las dependencias principales.
+
+\begin{table}[!t]
+\caption{Herramientas y bibliotecas}
+\label{tab:software}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{lX}
+\toprule
+\textbf{Herramienta} & \textbf{Uso}\\
+\midrule
+Python $\geq$ 3.11, uv & Servicios y manejo de dependencias\\
+NumPy $\geq$ 1.26 & Núcleo TSDF propio\\
+OpenCV $\geq$ 4.8 & Marcadores ArUco y estimación de pose\\
+SciPy, scikit-image & Mallado y métricas\\
+fast-simplification & Decimación cuádrica\\
+msgpack, zstandard & Serialización y compresión\\
+record3d $\geq$ 1.4 & Flujo RGB-D del iPhone por USB \cite{record3d}\\
+C99, raylib 5.5, CMake & Visor (GLSL 330 y GLSL ES 100) \cite{raylib}\\
+Kernel de Linux, dtc & Módulo \texttt{holo-io} y \emph{device tree}\\
+OpenSSL & Autoridad certificadora y certificados\\
+pytest $\geq$ 8 & Pruebas unitarias\\
+Git y GitHub & Control de versiones y \emph{pull requests}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================
+\section{Atributos: Aprendizaje continuo}
+
+\subsection{Necesidades de aprendizaje}
+\begin{itemize}
+  \item \textbf{Conocimientos:} subsistema GPIO, interrupciones, temporizadores y
+        \emph{device tree} en Linux; geometría proyectiva y pose de cámara;
+        fusión volumétrica TSDF; TLS~1.3 e infraestructura de clave pública.
+  \item \textbf{Habilidades:} depurar código de kernel, programar protocolos de
+        red asíncronos, medir rendimiento y escribir \emph{shaders} para GLES2.
+  \item \textbf{Destrezas:} cableado de pulsadores y construcción de la maqueta.
+  \item \textbf{Actitudes:} atacar primero los riesgos técnicos, documentar las
+        decisiones y coordinar el trabajo en equipo.
+\end{itemize}
+
+\subsection{Tecnologías posibles y seleccionadas}
+La Tabla~\ref{tab:alternativas} compara las alternativas consideradas.
+
+\begin{table}[!t]
+\caption{Alternativas tecnológicas}
+\label{tab:alternativas}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{XXX}
+\toprule
+\textbf{Alternativa} & \textbf{Elegida} & \textbf{Motivo}\\
+\midrule
+App iOS propia & Record3D & No se disponía de macOS para compilar\\
+Registro ICP entre vistas & Anillo ArUco & ICP es frágil con el ruido del sensor\\
+Transmitir video & Enviar estado de cámara & Menor latencia y carga en la Pi\\
+Plano del plato con RANSAC & Plano dado por ArUco & Es conocido y determinista\\
+Directorio compartido & Mensajes sobre mTLS & Lo exige el enunciado\\
+Tornamesa motorizada & Giro manual (motor opcional) & Reduce riesgo y costo\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Acciones implementadas y evidencia}
+\begin{enumerate}
+  \item \textbf{Planificación por hitos:} nueve hitos (M0--M8) con tareas,
+        dependencias y criterios de aceptación en
+        \texttt{plan/milestones-and-actions.md}.
+  \item \textbf{Pruebas de viabilidad:} captura por USB y pose con el anillo se
+        validaron antes de construir sobre ellas (\texttt{tests/spikes/}).
+  \item \textbf{Pruebas automatizadas:} pruebas unitarias en
+        \texttt{tests/unit/} y una prueba sintética con el \emph{Stanford bunny}
+        (cortesía del Stanford Computer Graphics Laboratory).
+  \item \textbf{Control de versiones:} ramas por hito e integración mediante
+        \emph{pull requests}; historial entre el 8 y el 24 de noviembre de 2026.
+  \item \textbf{Búsqueda de información y repaso:}
+        \pendiente{fuentes consultadas, reuniones, horas y responsables}
+\end{enumerate}
+
+\pendiente{insertar capturas como evidencia: historial de commits, pull requests,
+salida de pytest, fotos del montaje, actas de reunión}
+
+\subsection{Evaluación crítica}
+La Tabla~\ref{tab:evaluacion} evalúa la eficiencia de las acciones.
+\pendiente{el equipo debe revisar esta evaluación y ajustarla a su experiencia}
+
+\begin{table}[!t]
+\caption{Evaluación de las acciones}
+\label{tab:evaluacion}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{lXX}
+\toprule
+\textbf{Acción} & \textbf{Resultado} & \textbf{Limitación}\\
+\midrule
+Hitos & Permiten trabajar frentes en paralelo & Sin fechas ni responsables asignados\\
+Viabilidad & Confirmó captura y pose con hardware real & Quedaron pendientes las pruebas en la Pi\\
+Pruebas & Verifican la fusión y el protocolo sin hardware & No sustituyen la prueba del controlador\\
+Versionado & Trazabilidad de cada cambio & Actividad concentrada en pocos días\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================
+\section{Detalles del diseño}
+
+\subsection{Arquitectura}
+El sistema usa una topología en estrella (Fig.~\ref{fig:arquitectura}). El
+\emph{host} escucha en el puerto TCP 7400; \emph{worker B} y la Pi abren la
+conexión hacia él y no se comunican entre sí.
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[node distance=5mm and 24mm]
+  \node[caja] (cap) {capture-service};
+  \node[caja, below=of cap] (coord) {coordinator\\astrea-host};
+  \node[caja, below=of coord] (wh) {worker};
+  \node[caja, below=of wh] (vis) {renderer\\(viewer)};
+
+  \node[caja, left=of cap] (phone) {iPhone TrueDepth\\Record3D};
+
+  \node[caja, left=34mm of coord] (wb) {worker};
+
+  \node[caja, right=34mm of coord] (agent) {device-agent};
+  \node[caja, below=of agent] (wp) {worker (ligero)};
+  \node[caja, below=of wp] (holo) {renderer\\(hologram)};
+  \node[caja, above=of agent] (drv) {holo-io\\/dev/holo-input};
+  \node[caja, above=of drv] (btn) {5 pulsadores\\GPIO};
+  \node[caja, right=8mm of holo] (pant) {Pepper's\\Ghost};
+
+  \begin{scope}[on background layer]
+    \node[grupo, fit=(cap)(coord)(wh)(vis), label=above:{\footnotesize\bfseries Nodo 1: Host}] (g1) {};
+    \node[grupo, fit=(wb), label=above:{\footnotesize\bfseries Nodo 2: Worker B}] (g2) {};
+    \node[grupo, fit=(drv)(agent)(wp)(holo), label={[xshift=18mm]above:{\footnotesize\bfseries Nodo 3: Pi 3}}] (g3) {};
+  \end{scope}
+
+  \draw[flecha] (phone) -- node[etiqueta]{USB} (cap);
+  \draw[doble] (coord) -- node[etiqueta]{mTLS\\N1} (wb);
+  \draw[doble] (coord) -- node[etiqueta]{mTLS\\N1, N2, N3} (agent);
+  \draw[flecha] (btn) -- node[etiqueta, right]{IRQ} (drv);
+  \draw[flecha] (drv) -- (agent);
+  \draw[flecha] (agent.east) -- ++(5mm,0) |- node[etiqueta, pos=0.25]{socket\\Unix} (holo.east);
+  \draw[flecha] (holo) -- (pant);
+\end{tikzpicture}
+\caption{Arquitectura. N1: trabajos de reconstrucción; N2: envío del modelo;
+N3: entradas y estado de cámara. \texttt{astrea-host}, \texttt{device-agent} y el
+socket del visor están diseñados pero aún no implementados.}
+\label{fig:arquitectura}
+\end{figure*}
+
+\subsection{Componentes}
+La Fig.~\ref{fig:componentes} muestra los paquetes de software y sus
+dependencias.
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[node distance=12mm and 8mm]
+  \node[caja] (capt) {capture\_service\\Record3D, ArUco,\\keyframes};
+  \node[caja, right=of capt] (coo) {coordinator\\reparto, merge,\\mallado, LOD};
+  \node[caja, right=of coo] (wor) {worker\\fusión parcial};
+  \node[caja, right=of wor] (dev) {device\_agent\\botones y modelo\\(pendiente)};
+  \node[caja, below=18mm of coo, xshift=18mm, minimum width=105mm]
+        (com) {astrea\_common: TSDF, preprocesado, protocolo, framing, TLS, configuración, anillo ArUco, GLB};
+  \node[caja, below=of com, xshift=-30mm] (ren) {renderer\\C + raylib};
+  \node[caja, below=of com, xshift=30mm] (kern) {holo-io\\módulo de kernel};
+
+  \foreach \n in {capt,coo,wor,dev}
+    \draw[flecha] (\n) -- (\n |- com.north);
+  \draw[flecha, dashed] (ren) -- node[etiqueta]{carga GLB} (ren |- com.south);
+  \draw[flecha, dashed] (kern) -- node[etiqueta]{HoloEvent} (kern |- com.south);
+\end{tikzpicture}
+\caption{Componentes. Las líneas continuas son dependencias de código; las
+punteadas, contratos de formato compartidos entre lenguajes.}
+\label{fig:componentes}
+\end{figure*}
+
+\subsection{Controlador \texttt{holo-io}}
+Es un \emph{platform driver} asociado a un nodo de \emph{device tree} compatible
+con \texttt{astreaview,holo-io}. Sus características son:
+\begin{itemize}
+  \item interrupción por ambos flancos en cada GPIO;
+  \item \emph{debounce} con \texttt{hrtimer} (10~ms por defecto);
+  \item repetición automática cada 50~ms en los botones de movimiento;
+  \item cola \texttt{kfifo} de 256 eventos y \emph{wait queue}, con
+        \texttt{read} y \texttt{poll};
+  \item \texttt{ioctl} para ajustar tiempos y estadísticas en \texttt{sysfs};
+  \item apertura exclusiva de \texttt{/dev/holo-input}.
+\end{itemize}
+
+Cada evento es un registro de 16 bytes:
+\begin{lstlisting}[language=C]
+struct HoloEvent {
+    __u64 timestampNs;
+    __u16 source;
+    __u16 code;
+    __s32 value;   /* 0 release, 1 press, 2 repeat */
+};
+\end{lstlisting}
+
+La Tabla~\ref{tab:botones} muestra la asignación de pines. Cada pulsador va entre
+el GPIO y tierra, con resistencia de \emph{pull-up} interna.
+
+\begin{table}[!t]
+\caption{Pulsadores (numeración BCM)}
+\label{tab:botones}
+\centering
+\footnotesize
+\begin{tabular}{ccl}
+\toprule
+\textbf{GPIO} & \textbf{Código} & \textbf{Acción}\\
+\midrule
+4 & 1 & Girar a la derecha\\
+27 & 2 & Girar a la izquierda\\
+22 & 3 & Acercar\\
+23 & 4 & Alejar\\
+24 & 5 & Activar o desactivar autorrotación\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Captura y reconstrucción}
+\textbf{Captura.} El anillo tiene 12 marcadores \texttt{DICT\_4X4\_50} de 24~mm,
+con centros a 70~mm del eje. Se guarda una vista cuando el ángulo avanzó al menos
+$10^{\circ}$ y la pose se mantiene estable cerca de 0.5~s, promediando los
+cuadros de esa ventana.
+
+\textbf{Preprocesado.} Por cada vista se recorta la profundidad entre 200 y
+500~mm, se conserva un cilindro de 100~mm de radio sobre el plato y se eliminan
+píxeles aislados y componentes pequeñas. Solo usa datos de la propia vista, de
+modo que repartir las vistas no altera el resultado.
+
+\textbf{Integración y salida.} Cada observación se pondera por ángulo de
+incidencia y profundidad. El tamaño de vóxel por defecto es 0.65~mm. De la malla
+se exportan tres niveles de detalle en GLB: completo, alto (unos 30\,000
+triángulos) y bajo (unos 8\,000, para la Pi).
+
+\subsection{Distribución}
+El coordinador fija la rejilla, las poses y los parámetros, y reparte las vistas
+por turnos (\emph{round robin}). Cada \emph{worker} fusiona en un hilo aparte,
+para no detener los latidos de la conexión, y devuelve solo los bloques de $32^3$
+vóxeles con peso positivo, comprimidos con zstd. El coordinador los combina con
+la ecuación~(1). El reparto proporcional al rendimiento y la reasignación ante
+fallos están pendientes: hoy la caída de un \emph{worker} aborta la
+reconstrucción.
+
+\subsection{Protocolo y seguridad}
+Cada trama tiene la forma \texttt{[u32 length][u8 type][msgpack]}, con un máximo
+de 4~MiB. La conexión usa exclusivamente TLS~1.3 con certificados ECDSA~P-256 de
+una autoridad propia; el nombre del nodo del certificado debe coincidir con el
+declarado en \texttt{HELLO}. Hay latidos cada 2~s y se cierra el enlace tras 6~s
+de silencio. La Tabla~\ref{tab:mensajes} lista los mensajes.
+
+\begin{table}[!t]
+\caption{Mensajes del protocolo}
+\label{tab:mensajes}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{lX}
+\toprule
+\textbf{Mensaje} & \textbf{Propósito}\\
+\midrule
+HELLO & Identificación y versión\\
+HEARTBEAT & Detección de caídas y medición de ida y vuelta\\
+JOB\_ASSIGN & Vistas, poses, rejilla y parámetros\\
+JOB\_RESULT & Bloques del volumen parcial\\
+INPUT\_EVENT & Evento de un botón\\
+CAMERA\_STATE & Giro, inclinación fija, acercamiento y modelo\\
+MODEL\_PUSH & Modelo en fragmentos con SHA-256\\
+ROTATE, ROTATE\_DONE & Reservados para la tornamesa motorizada\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Diagramas de secuencia}
+Las Figs.~\ref{fig:sec-escaneo} y~\ref{fig:sec-botones} muestran los dos flujos
+principales.
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[x=1cm, y=0.8cm]
+  \foreach \x/\n in {0/Usuario, 3/Captura, 6.3/Coordinator, 9.9/Workers (3), 13.5/Visores} {
+    \node[caja] at (\x,0) {\n};
+    \draw[dashed, gray] (\x,-0.5) -- (\x,-9.4);
+  }
+  \draw[flecha] (0,-1)   -- node[etiqueta, above]{gira el plato} (3,-1);
+  \draw[flecha] (3,-1.7) -- ++(0.8,0) -- ++(0,-0.6) node[etiqueta, midway, right]{pose y keyframe} -- (3,-2.3);
+  \draw[flecha] (3,-3.2) -- node[etiqueta, above]{sesión de vistas} (6.3,-3.2);
+  \draw[flecha] (6.3,-4.2) -- node[etiqueta, above]{JOB\_ASSIGN} (9.9,-4.2);
+  \draw[flecha] (9.9,-5) -- ++(0.8,0) -- ++(0,-0.6) node[etiqueta, midway, right]{fusión TSDF} -- (9.9,-5.6);
+  \draw[flecha] (9.9,-6.4) -- node[etiqueta, above]{JOB\_RESULT} (6.3,-6.4);
+  \draw[flecha] (6.3,-7.1) -- ++(0.8,0) -- ++(0,-0.6) node[etiqueta, midway, right]{merge y malla} -- (6.3,-7.7);
+  \draw[flecha] (6.3,-8.7) -- node[etiqueta, above]{GLB / MODEL\_PUSH} (13.5,-8.7);
+\end{tikzpicture}
+\caption{Secuencia de escaneo. El envío del modelo a la Pi corresponde al diseño
+y está pendiente.}
+\label{fig:sec-escaneo}
+\end{figure*}
+
+\begin{figure*}[!t]
+\centering
+\begin{tikzpicture}[x=1cm, y=0.8cm]
+  \foreach \x/\n in {0/Pulsador, 2.8/holo-io, 6/device-agent, 9.6/astrea-host, 13.2/Visores} {
+    \node[caja] at (\x,0) {\n};
+    \draw[dashed, gray] (\x,-0.5) -- (\x,-6.2);
+  }
+  \draw[flecha] (0,-1)   -- node[etiqueta, above]{flanco (IRQ)} (2.8,-1);
+  \draw[flecha] (2.8,-1.7) -- ++(0.8,0) -- ++(0,-0.6) node[etiqueta, midway, right]{debounce} -- (2.8,-2.3);
+  \draw[flecha] (2.8,-3) -- node[etiqueta, above]{HoloEvent} (6,-3);
+  \draw[flecha] (6,-3.7) -- node[etiqueta, above]{INPUT\_EVENT} (9.6,-3.7);
+  \draw[flecha] (9.6,-4.6) -- node[etiqueta, above]{CAMERA\_STATE (a la Pi)} (6,-4.6);
+  \draw[flecha] (9.6,-5.5) -- node[etiqueta, above]{estado local} (13.2,-5.5);
+\end{tikzpicture}
+\caption{Secuencia de botones a holograma (diseño). El visor de la Pi recibe el
+estado a través del \texttt{device-agent}.}
+\label{fig:sec-botones}
+\end{figure*}
+
+\subsection{Funcionalidades}
+La Fig.~\ref{fig:funciones} agrupa las funciones del sistema.
+
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}[node distance=3mm,
+  rama/.style={caja, text width=24mm},
+  hoja/.style={caja, text width=46mm, align=left}]
+  \node[rama] (a) {Captura};
+  \node[hoja, right=5mm of a] (a1) {Flujo RGB-D, pose ArUco, keyframes automáticos, indicador de cobertura};
+  \node[rama, below=9mm of a] (b) {Reconstrucción};
+  \node[hoja, right=5mm of b] (b1) {Preprocesado, TSDF, malla, niveles de detalle};
+  \node[rama, below=9mm of b] (c) {Distribución};
+  \node[hoja, right=5mm of c] (c1) {Reparto, fusión parcial, merge exacto, reasignación*};
+  \node[rama, below=9mm of c] (d) {Seguridad};
+  \node[hoja, right=5mm of d] (d1) {mTLS, certificados por nodo, validación de mensajes};
+  \node[rama, below=9mm of d] (e) {Interacción*};
+  \node[hoja, right=5mm of e] (e1) {Botones, teclado, autorrotación, visor y holograma sincronizados};
+  \foreach \n in {a,b,c,d,e} \draw[flecha] (\n) -- (\n1);
+\end{tikzpicture}
+\caption{Funcionalidades. El asterisco indica funciones aún incompletas.}
+\label{fig:funciones}
+\end{figure}
+
+% =====================================================================
+\section{Resultados}
+
+\subsection{Captura}
+El flujo por USB entregó cerca de 27 cuadros por segundo a $480\times640$ con sus
+parámetros intrínsecos. La pose con el anillo real se mantuvo estable en reposo,
+en pasos de $30^{\circ}$ y con oclusión parcial.
+\pendiente{error angular medido contra marcas en el plato; meta: menor que 1 grado}
+
+\subsection{Reconstrucción}
+En la prueba sintética sin ruido, la distancia de la reconstrucción al modelo
+original tuvo media de 0.16 vóxeles y percentil 95 de 0.38 vóxeles; el umbral
+era 2 y 4 vóxeles. El nivel alto pesa 594~KiB (485~KiB con zstd) y el bajo
+160~KiB (131~KiB). \pendiente{resultados con capturas reales e imágenes}
+
+\subsection{Distribución}
+Con un escaneo real de 59 vistas y tres \emph{workers} en una misma máquina, la
+rejilla de $332\times334\times256$ (568~MiB) tomó 110~s en total: cerca de 100~s
+de fusión por \emph{worker} y 3.9~s de \emph{merge}. Cada proceso llegó a unos
+1.3~GB de memoria. Con vóxel de 1.3~mm, la corrida distribuida y la de un nodo
+produjeron 54\,967 caras en el nivel completo.
+\pendiente{tabla de speedup 1 vs 3 workers en las tres máquinas reales}
+
+\subsection{Red segura}
+Los tres nodos reales se conectaron e intercambiaron latidos.
+\pendiente{captura de Wireshark y prueba de rechazo de certificados inválidos}
+
+\subsection{Controlador, visor y latencia}
+El módulo compila sin advertencias contra los encabezados 6.12 de x86, pero aún
+no se ha cargado en la Raspberry~Pi.
+\pendiente{salida de dmesg, estadísticas de sysfs, prueba de 100 pulsaciones,
+cuadros por segundo en la Pi, latencia del botón al holograma, fotos}
+
+% =====================================================================
+\section{Instrucciones de utilización}
+
+\subsection{Requisitos e instalación}
+\begin{lstlisting}[language=bash]
+git clone <URL del repositorio> astrea-view
+cd astrea-view
+uv sync --extra record3d --extra reconstruction
+uv run pytest
+\end{lstlisting}
+
+En Linux, la captura por USB requiere \texttt{usbmuxd} y la función de
+transmisión USB de Record3D.
+
+\subsection{Certificados y configuración}
+\begin{lstlisting}[language=bash]
+pki/make-certs.sh --out pki/out --ip host=<IP>
+\end{lstlisting}
+Copie a cada nodo \texttt{ca.crt}, su certificado y su clave. En
+\texttt{config.toml} ajuste \texttt{hub.address}, \texttt{hub.bind-address} y las
+rutas de \texttt{[tls]} para usar \texttt{pki/out/}.
+
+\subsection{Anillo y captura}
+\begin{lstlisting}[language=bash]
+uv run hardware/aruco-ring/generate-ring.py \
+    --out-dir hardware/aruco-ring/out
+uv run astrea-capture --name taza
+\end{lstlisting}
+Imprima el anillo al 100\,\% de escala, coloque el objeto al centro y gire el
+plato con pausas.
+
+\subsection{Reconstrucción}
+En un solo nodo:
+\begin{lstlisting}[language=bash]
+uv run astrea-reconstruct out/scans/taza
+\end{lstlisting}
+Distribuida (primero el host y luego cada worker):
+\begin{lstlisting}[language=bash]
+# host
+uv run astrea-coordinator --config config.toml \
+    reconstruct out/scans/taza --min-workers 3 --voxel-mm 1.3
+# host y worker B
+uv run astrea-worker --name host
+uv run astrea-worker --name worker-b
+# Raspberry Pi
+OPENSSL_CONF=pki/openssl-chacha20.cnf \
+    uv run astrea-worker --name pi
+\end{lstlisting}
+
+\subsection{Visor}
+\begin{lstlisting}[language=bash]
+cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release
+# en la Pi agregar: -DRENDERER_PLATFORM=DRM
+cmake --build renderer/build -j
+renderer/build/renderer --mode viewer \
+    --model out/scans/taza/model/lod-high.glb --up-axis z
+\end{lstlisting}
+
+\subsection{Controlador (Raspberry Pi)}
+\begin{lstlisting}[language=bash]
+cd driver/holo-io
+make
+sudo make install
+echo "dtoverlay=holo-io" | sudo tee -a /boot/firmware/config.txt
+sudo reboot
+# despues de reiniciar, en la misma carpeta
+./holo-reader
+./check-presses.sh 100
+\end{lstlisting}
+
+% =====================================================================
+\section{Conclusiones}
+\pendiente{revisar al terminar las pruebas en hardware}
+\begin{itemize}
+  \item La fusión TSDF por promedio ponderado permite distribuir las vistas y
+        obtener un resultado equivalente al de un solo nodo.
+  \item Un anillo de marcadores sustituye a un codificador o motor para conocer
+        la pose en un plato girado a mano.
+  \item La memoria, más que el cálculo, limita la participación de la Raspberry
+        Pi: obliga a usar una rejilla más gruesa.
+  \item Separar el preprocesado por vista y fijar la rejilla en el coordinador es
+        lo que hace reproducible la distribución.
+\end{itemize}
+
+\section{Sugerencias y recomendaciones}
+\begin{itemize}
+  \item Probar en el hardware definitivo desde las primeras semanas, en especial
+        el módulo de kernel.
+  \item Reasignar el trabajo de un nodo caído y repartir según el rendimiento de
+        cada uno.
+  \item Agregar la tornamesa motorizada para reforzar el componente de hardware.
+  \item Usar certificados propios en la demostración, nunca los de ejemplo.
+\end{itemize}
+
+% =====================================================================
+\begin{thebibliography}{00}
+\bibitem{ldd3} J. Corbet, A. Rubini y G. Kroah-Hartman, \emph{Linux Device
+Drivers}, 3.\textsuperscript{a} ed. O'Reilly Media, 2005.
+\bibitem{curless} B. Curless y M. Levoy, ``A volumetric method for building
+complex models from range images,'' en \emph{Proc. SIGGRAPH}, 1996, pp. 303--312.
+\bibitem{kinectfusion} R. A. Newcombe \emph{et al.}, ``KinectFusion: Real-time
+dense surface mapping and tracking,'' en \emph{Proc. IEEE ISMAR}, 2011,
+pp. 127--136.
+\bibitem{marching} W. E. Lorensen y H. E. Cline, ``Marching cubes: A high
+resolution 3D surface construction algorithm,'' en \emph{Proc. SIGGRAPH}, 1987,
+pp. 163--169.
+\bibitem{taubin} G. Taubin, ``A signal processing approach to fair surface
+design,'' en \emph{Proc. SIGGRAPH}, 1995, pp. 351--358.
+\bibitem{quadric} M. Garland y P. S. Heckbert, ``Surface simplification using
+quadric error metrics,'' en \emph{Proc. SIGGRAPH}, 1997, pp. 209--216.
+\bibitem{aruco} S. Garrido-Jurado, R. Mu\~noz-Salinas, F. J. Madrid-Cuevas y
+M. J. Mar\'in-Jim\'enez, ``Automatic generation and detection of highly reliable
+fiducial markers under occlusion,'' \emph{Pattern Recognition}, vol. 47, n.o 6,
+pp. 2280--2292, 2014.
+\bibitem{tls13} E. Rescorla, ``The Transport Layer Security (TLS) Protocol
+Version 1.3,'' RFC 8446, IETF, 2018.
+\bibitem{chacha} Y. Nir y A. Langley, ``ChaCha20 and Poly1305 for IETF
+Protocols,'' RFC 8439, IETF, 2018.
+\bibitem{raylib} R. Santamaria, ``raylib.'' [En línea]. Disponible:
+\url{https://www.raylib.com}
+\bibitem{record3d} M. Simonik, ``Record3D.'' [En línea]. Disponible:
+\url{https://record3d.app}
+\end{thebibliography}
+
+\end{document}
