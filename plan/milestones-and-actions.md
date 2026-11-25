@@ -88,31 +88,38 @@ Módulo de kernel propio que expone los 5 botones GPIO como un char device con i
 
 - [ ] M1.1: Overlay de device tree: 5 botones (BCM 4, 27, 22, 23, 24) con `bias-pull-up`; nodos de ZX (I2C1 `0x10`, pin DR) y stepper (4 GPIO) declarados con `status = "disabled"`; Depende de: M0.1;
 - [x] M1.2: `struct HoloEvent{source, code, value, timestampNs}` en un header compartido con el `device-agent`; `source = JOYSTICK`; Depende de: M0.1;
-- [ ] M1.3: IRQ por ambos flancos en cada GPIO (API `gpiod_*`); Depende de: M1.1;
-- [ ] M1.4: Debounce con `hrtimer` (~5–10 ms) antes de leer el estado estable; Depende de: M1.3;
-- [ ] M1.5: Autorepeat con `hrtimer` periódico mientras se mantienen derecha, izquierda, zoom + o zoom − (no el botón de autorrotación); Depende de: M1.4;
-- [ ] M1.6: Cola `kfifo` + `wait_queue`; `read()` y `poll()`; Depende de: M1.2, M1.4;
-- [ ] M1.7: `ioctl` para debounce y tasa de repetición; Depende de: M1.5, M1.6;
-- [ ] M1.8: Estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos); Depende de: M1.4, M1.6;
-- [ ] M1.9: Carga automática al arrancar; Depende de: M1.1, M1.6;
-- [ ] M1.10: Lector de prueba en espacio de usuario que imprime eventos; Depende de: M1.6;
+- [x] M1.3: IRQ por ambos flancos en cada GPIO (API `gpiod_*`); Depende de: M1.1;
+- [x] M1.4: Debounce con `hrtimer` (~5–10 ms) antes de leer el estado estable; Depende de: M1.3;
+- [x] M1.5: Autorepeat con `hrtimer` periódico mientras se mantienen derecha, izquierda, zoom + o zoom − (no el botón de autorrotación); Depende de: M1.4;
+- [x] M1.6: Cola `kfifo` + `wait_queue`; `read()` y `poll()`; Depende de: M1.2, M1.4;
+- [x] M1.7: `ioctl` para debounce y tasa de repetición; Depende de: M1.5, M1.6;
+- [x] M1.8: Estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos); Depende de: M1.4, M1.6;
+- [x] M1.9: Carga automática al arrancar; Depende de: M1.1, M1.6;
+- [x] M1.10: Lector de prueba en espacio de usuario que imprime eventos; Depende de: M1.6;
 
 **Criterio de aceptación/éxito**
 
-- [ ] Cumple `insmod` y `dmesg` limpios (1,3,4,5,6,7,8)
-- [ ] Cumple que el lector de prueba imprime los eventos de los botones (6,10)
-- [ ] Cumple que 100 pulsaciones de un botón producen exactamente 100 eventos, y las estadísticas de `sysfs` coinciden (4,6,8,10)
-- [ ] Cumple `rmmod` sin fugas de IRQ ni de GPIO (3,6)
+- [x] Cumple `insmod` y `dmesg` limpios (1,3,4,5,6,7,8)
+- [x] Cumple que el lector de prueba imprime los eventos de los botones (6,10)
+- [x] Cumple que 100 pulsaciones de un botón producen exactamente 100 eventos, y las estadísticas de `sysfs` coinciden (4,6,8,10)
+- [x] Cumple `rmmod` sin fugas de IRQ ni de GPIO (3,6)
 
 **Notas**
 
 - Diseño de entradas: 5 botones entre un GPIO y GND (BCM 4 derecha, 27 izquierda, 22 zoom +, 23 zoom −, 24 activar/desactivar la rotación automática). No hay rotación vertical: el pitch queda fijo en 20°. Reset y modelo siguiente solo existen en el teclado del host. `source` sigue siendo `JOYSTICK` (1) para no tocar el protocolo congelado.
-- M1.1: `holo-io-overlay.dts` declara los 5 botones con `bias` de pull-up (`brcm,pull = <2>`). Sin compilar ni cargar: falta `dtc` en la PC y la prueba en la Pi. Los nodos de ZX y stepper siguen sin declarar porque faltan sus pines.
+- M1.1 (sin tickear): `holo-io-overlay.dts` declara los 5 botones con pull-up (`brcm,pull = <2>`) y funciona en la Pi, pero los nodos de ZX y stepper siguen sin declarar porque faltan sus pines.
 - M1.2: `driver/holo-io/holo-event.h` es la fuente de verdad (registro de 16 bytes: `timestampNs` u64, `source` u16, `code` u16, `value` s32; códigos 1–5 para derecha, izquierda, zoom +, zoom − y autorrotación; `value` 0 suelta, 1 pulsa, 2 repite). `astrea_common.holo_event` lo espeja y `tests/unit/test_holo_event.py` compara ambos lados y compila el header con `gcc`.
 - El host corta el movimiento continuo de los botones cuando dejan de llegar repeticiones (`BUTTON_HOLD_TIMEOUT_S`, 0.3 s): M1.5 debe repetir los cuatro botones de movimiento con un periodo claramente menor, y no repetir el de autorrotación.
-- Estado del código (M1.1 y M1.3–M1.10 escritos, **sin probar en la Pi**, por eso no se marcan): compila sin avisos con `W=1` contra los headers 6.12 de x86, y el lector de prueba (`holo-reader`) compila sin avisos; nada se ha cargado en un kernel. Falta confirmar el kernel de la Pi (`uname -r`) y que sus headers estén instalados; el módulo trae guardas de versión para `platform_driver.remove` (6.11) y `hrtimer_setup` (6.13).
-- Criterio «100 pulsaciones = 100 eventos»: se mide en eventos `PRESS` de un solo botón, mejor el de autorrotación porque no repite; `driver/holo-io/check-presses.sh` compara lo que ve `holo-reader` con `presses` en sysfs y exige `dropped = 0`. Las estadísticas están en `/sys/class/misc/holo-input/device/stats/`.
-- Carga automática (M1.9): el overlay crea el nodo `holo-io`, el módulo se enlaza por `MODULE_DEVICE_TABLE(of)` al instalarlo con `sudo make install` (módulo, regla udev y `holo-io.dtbo`) y añadir `dtoverlay=holo-io` a `/boot/firmware/config.txt`. Sin verificar en la Pi.
+- Resultados en la Pi 3 (Raspberry Pi OS 64 bits, kernel `6.18.60+rpt-rpi-v8`; el módulo compila y carga con las guardas de versión; antes solo se había compilado contra los headers 6.12 de x86):
+  - `dmesg`: una sola línea del módulo, `loaded 0.1.0: 5 buttons, debounce 10 ms, repeat 50 ms`; el nodo `/dev/holo-input` queda en el grupo `input` con modo 0660.
+  - `check-presses.sh 100` con el botón de autorrotación: lector 100, sysfs 100, `dropped` 0. Contadores finales: `irqs=1439 bounces_filtered=1225 presses=107 releases=107 repeats=18` (107 incluye 7 pulsaciones de pruebas anteriores). El debounce de 10 ms absorbió unos 6.7 flancos por transición sin generar eventos de más.
+  - `ioctl`: lectura y escritura de debounce y repetición correctas (`-D 8 -R 40`), y `-R 5` rechazado con `EINVAL`. Con un lector abierto, un segundo `open` da `EBUSY`.
+  - `rmmod` con el lector cerrado: sin salida en `/proc/interrupts` ni en `/sys/kernel/debug/gpio`, y `modprobe` recarga sin errores. No se probó `rmmod` con el lector abierto.
+  - Carga al arrancar: tras `sudo make install` y `dtoverlay=holo-io` bajo `[all]` en `config.txt`, el módulo y `/dev/holo-input` aparecen solos al reiniciar.
+  - Las repeticiones se vieron (`repeats=18`), pero no se midió el periodo ni que no llegue un `repeat` después de un `release`.
+- Mantenimiento: el módulo se instala para el kernel que corre al ejecutar `make install`; tras actualizar el kernel con `apt` hay que repetir `make clean && make && sudo make install`, o `modinfo holo-io` no lo encuentra y no se carga solo. La Pi mostró avisos `Undervoltage detected!` durante las pruebas, sin efecto visible en los resultados.
+- Criterio «100 pulsaciones = 100 eventos»: se mide en la diferencia de eventos `PRESS` de un solo botón, mejor el de autorrotación porque no repite; `driver/holo-io/check-presses.sh` compara lo que ve `holo-reader` con `presses` en sysfs y exige `dropped = 0`. Las estadísticas están en `/sys/class/misc/holo-input/device/stats/`.
+- Carga automática (M1.9): el overlay crea el nodo `holo-io` y el módulo se enlaza por `MODULE_DEVICE_TABLE(of)`. Se instala con `sudo make install` (módulo, regla udev y `holo-io.dtbo`) y se añade `dtoverlay=holo-io` a `/boot/firmware/config.txt`.
 - Entregables: `driver/holo-io/` (`holo-core.c`, `holo-buttons.c`, `holo-io-overlay.dts`, `Makefile`), lector de prueba, pruebas en `tests/`.
 
 ---
