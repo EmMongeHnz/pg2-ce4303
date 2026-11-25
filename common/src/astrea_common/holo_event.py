@@ -25,6 +25,18 @@ class EventValue(IntEnum):
     REPEAT = 2
 
 
+def DescribeEvent(event: InputEvent) -> str:
+    try:
+        code = ButtonCode(event.code).name.lower()
+    except ValueError:
+        code = f"code {event.code}"
+    try:
+        value = EventValue(event.value).name.lower()
+    except ValueError:
+        value = f"value {event.value}"
+    return f"{code} {value}"
+
+
 def DecodeHoloEvents(buffer: bytes) -> list[InputEvent]:
     if len(buffer) % HOLO_EVENT_STRUCT.size != 0:
         raise ValueError(f"expected a multiple of {HOLO_EVENT_STRUCT.size} bytes, got {len(buffer)}")

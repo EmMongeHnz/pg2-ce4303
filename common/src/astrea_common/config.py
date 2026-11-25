@@ -8,7 +8,7 @@ name of the node running on that machine, so each machine only needs its own key
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,7 @@ class HubConfig:
     address: str
     bindAddress: str
     port: int
+    devicePort: int
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,11 @@ class ClusterConfig:
     network: NetworkSettings
     tls: TlsSettings
     baseDir: Path
+
+    def ForDeviceLink(self) -> "ClusterConfig":
+        """The same cluster seen through the hub that serves the device agent (`astrea-host`), on its own port so it
+        can run next to the reconstruction hub."""
+        return replace(self, hub=replace(self.hub, port=self.hub.devicePort))
 
     def Node(self, name: str) -> NodeConfig:
         if name not in self.nodes:
@@ -133,12 +139,20 @@ def _ParseTls(table: dict[str, Any]) -> TlsSettings:
 
 def _ParseHub(table: dict[str, Any]) -> HubConfig:
     section = _Section(table, "hub")
-    _RejectUnknownKeys(section, {"node", "address", "bind-address", "port"}, "[hub]")
-    port = section.get("port")
-    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= MAX_PORT:
-        raise ConfigError(f"hub.port must be an integer between 1 and {MAX_PORT}")
+    _RejectUnknownKeys(section, {"node", "address", "bind-address", "port", "device-port"}, "[hub]")
+    port = _Port(section, "port", None)
+    devicePort = _Port(section, "device-port", port + 1)
+    if devicePort == port:
+        raise ConfigError("hub.device-port must differ from hub.port")
     address = _String(section, "address", "hub")
-    return HubConfig(_String(section, "node", "hub"), address, _String(section, "bind-address", "hub", default=address), port)
+    return HubConfig(_String(section, "node", "hub"), address, _String(section, "bind-address", "hub", default=address), port, devicePort)
+
+
+def _Port(section: dict[str, Any], key: str, default: int | None) -> int:
+    port = section.get(key, default)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= MAX_PORT:
+        raise ConfigError(f"hub.{key} must be an integer between 1 and {MAX_PORT}")
+    return port
 
 
 def _ParseNodes(table: dict[str, Any]) -> dict[str, NodeConfig]:

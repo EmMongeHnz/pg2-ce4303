@@ -4,7 +4,7 @@ Especificación del transporte seguro y de los mensajes entre los nodos (M2). La
 
 ## 1. Topología
 
-El host PC es el **hub**: escucha en un puerto TCP fijo (`hub.port`, por defecto 7400). Lo mantiene un servicio permanente del host (`astrea-host`, previsto en M5) que también lleva el estado de cámara; mientras no exista, el hub solo vive durante `astrea-coordinator reconstruct`. La Pi puede conectarse por un cable Ethernet directo al host: es solo la capa física, el protocolo y el cifrado no cambian. Worker B y la Pi **abren la conexión hacia el hub**; no hay enlaces entre ellos. Cada conexión es bidireccional y persistente, y cada nodo se reconecta con espera exponencial (`reconnect-initial-s` a `reconnect-max-s`).
+El host PC es el **hub** y tiene dos oyentes independientes, para que dos procesos separados no se disputen el puerto: el de las **reconstrucciones** (`hub.port`, por defecto 7400), que abre `astrea-coordinator reconstruct` mientras corre y al que se conectan los workers, y el del **dispositivo** (`hub.device-port`, por defecto `hub.port + 1`, es decir 7401), que mantiene el servicio permanente `astrea-host` y al que se conecta el `device-agent` de la Pi. Ambos usan el mismo certificado, el mismo protocolo y las mismas reglas. La Pi puede conectarse por un cable Ethernet directo al host: es solo la capa física, el protocolo y el cifrado no cambian. Worker B y la Pi **abren la conexión hacia el hub**; no hay enlaces entre ellos. Cada conexión es bidireccional y persistente, y cada nodo se reconecta con espera exponencial (`reconnect-initial-s` a `reconnect-max-s`).
 
 Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker` y otra como `device-agent`; el host puede abrir una como `worker` hacia su propio hub). El hub guarda una sola conexión viva por pareja (nodo, rol): una conexión nueva reemplaza a la anterior.
 
@@ -129,6 +129,13 @@ Contrato entre el proceso Python de una máquina y su `renderer` (`--control-soc
 - **`modelId`:** el renderer carga `<--models-dir>/<modelId>.glb`, salvo el modelo inicial (el nombre de `--model` sin `.glb`), que recarga desde la ruta con la que arrancó aunque no esté en ese directorio; el id solo admite letras, dígitos, `-`, `_` y `.` (sin empezar por punto), así que no puede salir del directorio. Si el archivo no existe conserva el modelo actual y lo avisa una sola vez. Un id vacío no cambia nada.
 - **Lado Python:** `coordinator.renderer_bridge.RendererBridge` atiende el socket, alimenta a `CameraControl` y envía el estado a ≤60 Hz (descarta envíos si el renderer va atrasado: gana el último).
 
+### Comportamiento del `device-agent` (N2 y N3)
+
+- **`INPUT_EVENT`:** cada registro de `/dev/holo-input` se envía tal cual (`source`, `code`, `value`, `timestampNs` de la Pi). El agente no interpreta los botones: el host los convierte en acciones de cámara. Con el enlace caído los eventos se descartan.
+- **`CAMERA_STATE`:** se entrega al renderer local como `ControlState`. El agente guarda el último y se lo envía a un renderer que se conecta o se reconecta.
+- **`MODEL_PUSH`:** un modelo es válido si el id cumple `[A-Za-z0-9_-][A-Za-z0-9_.-]*` con 31 bytes como máximo, `totalSize` ≤ 128 MiB y el SHA-256 de lo transmitido coincide. Si `compression = zstd` se descomprime con tope de tamaño. Se instala como `<models-dir>/<modelId>.glb` (archivo temporal más `rename`, así el renderer nunca ve un archivo a medias). Si un modelo no pasa las comprobaciones se descarta y se registra. Una transferencia nueva del mismo id reemplaza a una incompleta.
+- **Tras instalar un modelo** el agente reenvía el último `CAMERA_STATE` si ese estado nombra el modelo, porque el renderer solo reintenta cargar cuando recibe un estado.
+
 ### Trabajos de reconstrucción (N1)
 
 - **`params`** de `JOB_ASSIGN`: `preprocess` (mapa con campos de `PreprocessParams`; los que faltan toman su valor por defecto y una clave desconocida se rechaza), `weights` y `bilinear` (booleanos). `truncationMm` va aparte, en el mismo mensaje.
@@ -175,6 +182,7 @@ node = "host"
 address = "192.168.1.10"       # lo que marcan los nodos
 bind-address = "0.0.0.0"       # donde escucha el hub (por defecto igual a address)
 port = 7400
+device-port = 7401             # opcional (por defecto port + 1): hub de astrea-host y del device-agent
 
 [tls]
 ca-file = "pki/out/ca.crt"
@@ -198,7 +206,7 @@ Esto es lo único de M2 que falta ejecutar: la lógica ya se verifica en loopbac
 **Preparación (en el host):**
 1. `pki/make-certs.sh --out pki/out --ip host=<IP del host>` (genera la PKI de la demo; no usar `pki/example/`).
 2. Copiar a cada nodo solo `ca.crt` y su par `<node>.crt` / `<node>.key` (por ejemplo `scp`) a `pki/out/`, junto con el mismo `config.toml`.
-3. En `config.toml`: `hub.address = <IP del host>` y `hub.bind-address = "0.0.0.0"`. Abrir el puerto 7400/TCP en el host.
+3. En `config.toml`: `hub.address = <IP del host>` y `hub.bind-address = "0.0.0.0"`. Abrir los puertos 7400/TCP (workers) y 7401/TCP (`astrea-host` y `device-agent`) en el host.
 4. En la Pi y en worker B: `git clone` del repositorio y `uv sync`.
 
 **Enlace de los tres nodos:**
@@ -228,8 +236,8 @@ openssl s_client -connect <IP>:7400 -tls1_3 -CAfile pki/out/ca.crt -servername h
 En ambos casos `s_client` debe terminar con una alerta (`certificate required` / `unknown ca`) o con el cierre inmediato de la conexión, y el hub no debe listar ningún par nuevo. Con `-tls1_2` el handshake debe fallar por versión.
 
 **Solo TLS 1.3 en la red (Wireshark):**
-1. Capturar en el host: `sudo tcpdump -i any -w /tmp/astrea.pcap 'tcp port 7400'` mientras corre `connect` en otro nodo.
-2. Abrir la captura en Wireshark y comprobar que el filtro `tcp.port == 7400 && !tls` no muestra tramas con datos y que `tls.handshake.type == 1` indica `Version: TLS 1.3 (0x0304)` en `supported_versions`.
+1. Capturar en el host: `sudo tcpdump -i any -w /tmp/astrea.pcap 'tcp port 7400 or tcp port 7401'` mientras corre `connect` en otro nodo.
+2. Abrir la captura en Wireshark y comprobar que el filtro `(tcp.port == 7400 || tcp.port == 7401) && !tls` no muestra tramas con datos y que `tls.handshake.type == 1` indica `Version: TLS 1.3 (0x0304)` en `supported_versions`.
 3. Los datos de aplicación aparecen como `Application Data` cifrados; el nombre del nodo y las claves msgpack no son legibles.
 
 Al terminar, se tickean M2.6 y los criterios de aceptación de `plan/milestones-and-actions.md` que dependen de las máquinas reales.

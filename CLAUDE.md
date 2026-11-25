@@ -24,6 +24,9 @@ cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build 
                                           # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
+uv run astrea-host --models-dir out/models   # host: camera state, one <id>.glb per model pushed to the Pi (runs next to astrea-coordinator)
+OPENSSL_CONF=pki/openssl-chacha20.cnf uv run astrea-device-agent --name pi
+                                          # Pi: forwards /dev/holo-input to the host and feeds the hologram renderer (--renderer-socket, --models-dir)
 dot -Tpdf docs/block-diagram.dot -o docs/block-diagram.pdf
 ```
 
@@ -48,7 +51,7 @@ Always edit the `.dot` source, never the PDF. The N1–N4 / H1–H3 edge tags ar
 
 Three processing nodes that talk only over TCP with TLS 1.3 mutual auth (own CA, one cert per node, ChaCha20-Poly1305 preferred because the Pi 3 has no AES acceleration):
 
-1. **Host PC**: `capture-service` (Record3D RGB-D over USB, pose from an ArUco ring on a manual turntable, automatic keyframes every ~10°), `coordinator` (splits views across workers, exact weighted TSDF merge, meshing, LOD export to GLB), a `worker`, `astrea-host` (planned, M5: permanent service that owns the hub, the camera state and `MODEL_PUSH`), and `renderer --mode viewer`.
+1. **Host PC**: `capture-service` (Record3D RGB-D over USB, pose from an ArUco ring on a manual turntable, automatic keyframes every ~10°), `coordinator` (splits views across workers, exact weighted TSDF merge, meshing, LOD export to GLB), a `worker`, `astrea-host` (permanent service on its own hub port, `hub.device-port`: owns the camera state, receives the Pi's button events and sends `CAMERA_STATE` and `MODEL_PUSH`), and `renderer --mode viewer`.
 2. **Worker B** (second team laptop): `worker` (partial TSDF fusion).
 3. **Raspberry Pi 3**: `holo-io` kernel module exposing `/dev/holo-input` (5 GPIO buttons; optional ZX gesture sensor and `/dev/turntable` later), `device-agent` (Python, mTLS client), a light `worker`, and `renderer --mode hologram` (DRM/GLES2) feeding a Pepper's Ghost display.
 

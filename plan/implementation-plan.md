@@ -45,7 +45,7 @@ También se entrega documentación IEEE-Trans con diagramas de arquitectura, com
 ```
  iPhone (Record3D, TrueDepth) ──USB/Wi-Fi──► HOST PC
                                            ├─ capture-service  (tracking ArUco, captura automática)
-                                           ├─ astrea-host      (servicio permanente: dueño del hub, estado de cámara, MODEL_PUSH)
+                                           ├─ astrea-host      (servicio permanente: hub del dispositivo en hub.device-port, estado de cámara, MODEL_PUSH)
                                            ├─ coordinator      (reparte trabajos, fusiona, malla)
                                            ├─ worker
                                            └─ renderer --mode viewer
@@ -124,7 +124,8 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 - **Cámara orbital:** yaw y zoom, con pitch fijo (20°), más autorrotación que empieza desactivada.
 - **Modo hologram:** fondo negro, imagen espejada según la orientación del panel e iluminación alta.
 - **El host es la fuente de verdad del estado de cámara.**
-  - Un servicio permanente del host (`astrea-host`) es dueño del hub y del estado de cámara. Combina teclado y mouse locales con los eventos de botones remotos; las contribuciones se suman.
+  - Un servicio permanente del host (`astrea-host`) es dueño del estado de cámara y atiende al `device-agent` en su propio puerto (`hub.device-port`, por defecto `hub.port + 1`), así que corre en paralelo con `astrea-coordinator reconstruct`, que conserva el hub de los workers en `hub.port`. Combina teclado y mouse locales con los eventos de botones remotos; las contribuciones se suman.
+  - Cuando se conecta el agente, `astrea-host` le envía el estado actual, todos los modelos de su carpeta (`<id>.glb`, `MODEL_PUSH` con zstd y SHA-256) y el estado otra vez; las ids de esa carpeta son también las que recorre la tecla `N`.
   - Integra también la autorrotación (20°/s, empieza desactivada), de modo que los dos visores giran igual. El renderer del host solo reporta entradas crudas por el socket Unix y dibuja el estado que recibe.
   - Emite `CameraState{yaw, pitch, zoom, modelId}` cuando cambia, a ≤60 Hz. `pitch` viaja siempre con el valor fijo.
   - Teclado: A/D giran, W/S hacen zoom, `R` activa o desactiva la autorrotación y `N` pasa al siguiente modelo. El arrastre del mouse solo gira en horizontal (sin rueda). No hay reset.
@@ -194,7 +195,7 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 
 ### `device-agent` (Python en la Pi)
 
-**Mapeo de los botones**
+**Mapeo de los botones** (lo aplica el host, no el agente: el agente reenvía los eventos crudos)
 
 | GPIO (BCM) | Código | Acción |
 |---|---|---|
@@ -206,9 +207,11 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
 
 Reset de vista y siguiente modelo no tienen botón: solo existen en el teclado del host.
 
-**Además, el agente:**
-- envía las acciones al host por mTLS;
-- recibe `CameraState` y los modelos LOD-low y se los pasa al renderer local;
+**El agente:**
+- lee `/dev/holo-input` y envía cada registro al host como `INPUT_EVENT`, por mTLS y sin interpretarlo; los eventos que se producen con el enlace caído se descartan (el host corta solo un movimiento cuando dejan de llegar repeticiones);
+- recibe `CameraState` y se lo pasa al renderer local por su socket Unix; un renderer que se conecta recibe de inmediato el último estado;
+- recibe `MODEL_PUSH` (LOD-low), verifica tamaño y SHA-256, lo instala de forma atómica como `<models-dir>/<modelId>.glb` y repite el último estado para que el renderer cargue un modelo que antes no existía;
+- reintenta abrir el dispositivo si no está disponible, y se reconecta solo al host;
 - *(opcional)* ejecuta `ROTATE` y `ROTATE_DONE` cuando existe la tornamesa.
 
 ---
@@ -236,7 +239,7 @@ Reset de vista y siguiente modelo no tienen botón: solo existen en el teclado d
 ```
 astrea-view/
   driver/holo-io/          # holo-core.c, holo-buttons.c, holo-io.h, holo-event.h, holo-ioctl.h, holo-reader.c, zx-gesture.c*, turntable.c*, holo-io-overlay.dts, 99-holo-io.rules, Makefile
-  device-agent/            # input mapping, mTLS client
+  device-agent/            # /dev/holo-input reader, mTLS client, renderer socket, model installer
   host/capture-service/    # record3d / .r3d ingestion, ArUco tracking, keyframe selection
   host/coordinator/        # scheduling, TSDF merge, meshing, LOD export, camera state (camera_control)
   worker/                  # partial TSDF fusion

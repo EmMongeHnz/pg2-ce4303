@@ -19,19 +19,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from astrea_common.messages import CameraState
-from astrea_common.render_link import (
-    EncodeState,
-    InputAction,
-    InputDecoder,
-    InputKind,
-    RendererInput,
-)
+from astrea_common.render_link import InputAction, InputKind, RendererInput
+from astrea_common.render_server import RendererLink
 from coordinator.camera_control import CameraAction, CameraControl, InputDevice
 
 LOGGER = logging.getLogger(__name__)
 
 TICK_INTERVAL_S = 1.0 / 60.0
-MAX_UNSENT_BYTES = 4096
 
 
 class RendererBridge:
@@ -43,20 +37,22 @@ class RendererBridge:
         tickIntervalS: float = TICK_INTERVAL_S,
     ) -> None:
         self._control = control
-        self._socketPath = Path(socketPath)
         self._clock = clock
         self._tickIntervalS = tickIntervalS
-        self._server: asyncio.AbstractServer | None = None
         self._ticker: asyncio.Task | None = None
-        self._writer: asyncio.StreamWriter | None = None
         self._stateListeners: list[Callable[[CameraState], None]] = []
+        self._link = RendererLink(
+            socketPath,
+            onInput=self._Dispatch,
+            onDisconnected=lambda: self._control.ReleaseDevice(InputDevice.KEYBOARD, self._clock()),
+            currentState=self._control.Snapshot,
+        )
 
     def AddStateListener(self, listener: Callable[[CameraState], None]) -> None:
         self._stateListeners.append(listener)
 
     async def Start(self) -> None:
-        self._socketPath.unlink(missing_ok=True)
-        self._server = await asyncio.start_unix_server(self._ServeRenderer, path=str(self._socketPath))
+        await self._link.Start()
         self._ticker = asyncio.create_task(self._Tick())
 
     async def Stop(self) -> None:
@@ -64,50 +60,16 @@ class RendererBridge:
             self._ticker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._ticker
-        self._CloseRenderer()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-        self._socketPath.unlink(missing_ok=True)
+        await self._link.Stop()
 
     async def _Tick(self) -> None:
         while True:
             state = self._control.PollEmission(self._clock())
             if state is not None:
-                self._SendToRenderer(state)
+                self._link.Send(state)
                 for listener in self._stateListeners:
                     listener(state)
             await asyncio.sleep(self._tickIntervalS)
-
-    def _SendToRenderer(self, state: CameraState) -> None:
-        writer = self._writer
-        if writer is None or writer.transport.is_closing():
-            return
-        if writer.transport.get_write_buffer_size() > MAX_UNSENT_BYTES:
-            return
-        writer.write(EncodeState(state))
-
-    def _CloseRenderer(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
-
-    async def _ServeRenderer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self._CloseRenderer()
-        self._writer = writer
-        self._SendToRenderer(self._control.Snapshot())
-        decoder = InputDecoder()
-        try:
-            while data := await reader.read(256):
-                for event in decoder.Feed(data):
-                    self._Dispatch(event)
-        except (ConnectionError, ValueError) as error:
-            LOGGER.warning("renderer link dropped: %s", error)
-        finally:
-            if self._writer is writer:
-                self._writer = None
-                self._control.ReleaseDevice(InputDevice.KEYBOARD, self._clock())
-            writer.close()
 
     def _Dispatch(self, event: RendererInput) -> None:
         nowS = self._clock()
