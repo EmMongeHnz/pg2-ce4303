@@ -31,6 +31,7 @@ from pathlib import Path
 
 from astrea_common.compression import ZstdCompress
 from astrea_common.config import ClusterConfig, ConfigError, LoadConfig
+from astrea_common.holo_event import DescribeEvent, EventValue
 from astrea_common.link import Connection, HubServer
 from astrea_common.messages import CameraState, Compression, InputEvent, Message, Role, SplitModel
 from astrea_common.render_link import MODEL_ID_BYTES
@@ -119,7 +120,9 @@ class HostService:
     async def _OnMessage(self, connection: Connection, message: Message) -> None:
         if isinstance(message, InputEvent) and connection.peer.role is Role.DEVICE_AGENT:
             self.eventsReceived += 1
-            self.control.HandleButtonEvent(message, self._clock())
+            handled = self.control.HandleButtonEvent(message, self._clock())
+            if message.value != EventValue.REPEAT:
+                LOG.info("%s from %s: %s", "button" if handled else "ignored button event", connection.peer.node, DescribeEvent(message))
 
     async def _OnPeerConnected(self, connection: Connection) -> None:
         if connection.peer.role is not Role.DEVICE_AGENT:

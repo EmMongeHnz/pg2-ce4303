@@ -23,7 +23,7 @@ import zstandard
 
 from astrea_common.compression import ZstdDecompress
 from astrea_common.config import ClusterConfig
-from astrea_common.holo_event import HOLO_EVENT_STRUCT, DecodeHoloEvents
+from astrea_common.holo_event import HOLO_EVENT_STRUCT, DecodeHoloEvents, DescribeEvent, EventValue
 from astrea_common.link import Connection, NodeClient
 from astrea_common.messages import CameraState, Compression, InputEvent, Message, ModelAssembler, ModelIntegrityError, ModelPush, Role
 from astrea_common.render_link import MODEL_ID_BYTES
@@ -61,7 +61,9 @@ class DeviceAgentService:
         self._stopping = False
         self._deviceTask: asyncio.Task | None = None
         self._link = RendererLink(rendererSocket, currentState=lambda: self._latestState)
-        self._client = NodeClient(config.ForDeviceLink(), nodeName, Role.DEVICE_AGENT, onMessage=self._OnMessage, sslContext=sslContext)
+        self._client = NodeClient(
+            config.ForDeviceLink(), nodeName, Role.DEVICE_AGENT, onMessage=self._OnMessage, onConnected=self._OnConnected, sslContext=sslContext
+        )
 
     async def Run(self) -> None:
         self.modelsDir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +94,7 @@ class DeviceAgentService:
             try:
                 descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
             except OSError as error:
-                LOG.warning("cannot open %s (%s), retrying", path, error.strerror)
+                LOG.warning("cannot open %s (%s), retrying; another process may be holding it (see: sudo fuser -v %s)", path, error.strerror, path)
                 await asyncio.sleep(self._deviceRetryS)
                 continue
             LOG.info("reading %s", path)
@@ -134,6 +136,8 @@ class DeviceAgentService:
         for event in events:
             if connection is None or not connection.isOpen:
                 self.eventsDropped += 1
+                if self.eventsDropped == 1 or self.eventsDropped % 50 == 0:
+                    LOG.warning("not connected to the host: %d button events dropped so far", self.eventsDropped)
                 continue
             try:
                 await connection.Send(event)
@@ -141,6 +145,11 @@ class DeviceAgentService:
                 self.eventsDropped += 1
             else:
                 self.eventsForwarded += 1
+                if event.value != EventValue.REPEAT:
+                    LOG.info("sent to the host: %s", DescribeEvent(event))
+
+    async def _OnConnected(self, connection: Connection) -> None:
+        LOG.info("connected to the host (%s)", connection.peer.session)
 
     async def _OnMessage(self, connection: Connection, message: Message) -> None:
         if isinstance(message, CameraState):
