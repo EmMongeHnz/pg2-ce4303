@@ -9,7 +9,7 @@ Derivado de las fases de `implementation-plan.md`. Los criterios de aceptación 
 - Cada milestone cierra con sus criterios de aceptación (demo o verificación). Lo que depende de un milestone no se da por terminado sin ellos.
 - **Los riesgos primero:** nada que dependa de un spike de M0 se construye antes de que ese spike pase o tenga un respaldo decidido.
 - El protocolo (framing y mensajes) se **congela al cerrar M2**. Cambios posteriores requieren acuerdo del equipo y actualizar `docs/block-diagram.dot` (etiquetas N1–N4).
-- Antes de integrar, cada componente prueba contra datos simulados (capturas sintéticas, eventos de joystick falsos, `CameraState` grabado). En la integración se reemplazan por los reales.
+- Antes de integrar, cada componente prueba contra datos simulados (capturas sintéticas, eventos de botones falsos, `CameraState` grabado). En la integración se reemplazan por los reales.
 - Código, comentarios y nombres de archivo en inglés (kebab-case); documentos en español.
 - La documentación (M7) se escribe **durante** todo el proyecto, no al final: cada milestone deja diagramas, mediciones y evidencias de aprendizaje.
 - `docs/` no se versiona por defecto: solo contiene lo que el equipo pide explícitamente y se agrega al repo bajo demanda.
@@ -80,17 +80,17 @@ Confirmar o descartar las cuatro apuestas técnicas antes de construir encima, y
 
 ---
 
-# Milestone 1 — Driver `holo-io` (`/dev/holo-input` con joystick)
+# Milestone 1 — Driver `holo-io` (`/dev/holo-input` con 5 botones)
 
-Módulo de kernel propio que expone el joystick GPIO como un char device con interfaz extensible. Depende de: M0.1.
+Módulo de kernel propio que expone los 5 botones GPIO como un char device con interfaz extensible. Depende de: M0.1.
 
 **Tareas**
 
-- [ ] M1.1: Overlay de device tree: 4 direcciones + 4 botones con `bias-pull-up`; nodos de ZX (I2C1 `0x10`, pin DR) y stepper (4 GPIO) declarados con `status = "disabled"`; Depende de: M0.1;
-- [ ] M1.2: `struct HoloEvent{source, code, value, timestampNs}` en un header compartido con el `device-agent`; `source = JOYSTICK`; Depende de: M0.1;
+- [ ] M1.1: Overlay de device tree: 5 botones (BCM 4, 27, 22, 23, 24) con `bias-pull-up`; nodos de ZX (I2C1 `0x10`, pin DR) y stepper (4 GPIO) declarados con `status = "disabled"`; Depende de: M0.1;
+- [x] M1.2: `struct HoloEvent{source, code, value, timestampNs}` en un header compartido con el `device-agent`; `source = JOYSTICK`; Depende de: M0.1;
 - [ ] M1.3: IRQ por ambos flancos en cada GPIO (API `gpiod_*`); Depende de: M1.1;
 - [ ] M1.4: Debounce con `hrtimer` (~5–10 ms) antes de leer el estado estable; Depende de: M1.3;
-- [ ] M1.5: Autorepeat con `hrtimer` periódico mientras una dirección se mantiene; Depende de: M1.4;
+- [ ] M1.5: Autorepeat con `hrtimer` periódico mientras se mantienen derecha, izquierda, zoom + o zoom − (no el botón de autorrotación); Depende de: M1.4;
 - [ ] M1.6: Cola `kfifo` + `wait_queue`; `read()` y `poll()`; Depende de: M1.2, M1.4;
 - [ ] M1.7: `ioctl` para debounce y tasa de repetición; Depende de: M1.5, M1.6;
 - [ ] M1.8: Estadísticas en `sysfs` (IRQs, rebotes filtrados, eventos); Depende de: M1.4, M1.6;
@@ -100,13 +100,20 @@ Módulo de kernel propio que expone el joystick GPIO como un char device con int
 **Criterio de aceptación/éxito**
 
 - [ ] Cumple `insmod` y `dmesg` limpios (1,3,4,5,6,7,8)
-- [ ] Cumple que el lector de prueba imprime los eventos del joystick (6,10)
+- [ ] Cumple que el lector de prueba imprime los eventos de los botones (6,10)
 - [ ] Cumple que 100 pulsaciones de un botón producen exactamente 100 eventos, y las estadísticas de `sysfs` coinciden (4,6,8,10)
 - [ ] Cumple `rmmod` sin fugas de IRQ ni de GPIO (3,6)
 
 **Notas**
 
-- Entregables: `driver/holo-io/` (`holo-io.c`, `holo-joystick.c`, `holo-io-overlay.dts`, `Makefile`), lector de prueba, pruebas en `tests/`.
+- Diseño de entradas: 5 botones entre un GPIO y GND (BCM 4 derecha, 27 izquierda, 22 zoom +, 23 zoom −, 24 activar/desactivar la rotación automática). No hay rotación vertical: el pitch queda fijo en 20°. Reset y modelo siguiente solo existen en el teclado del host. `source` sigue siendo `JOYSTICK` (1) para no tocar el protocolo congelado.
+- M1.1: `holo-io-overlay.dts` declara los 5 botones con `bias` de pull-up (`brcm,pull = <2>`). Sin compilar ni cargar: falta `dtc` en la PC y la prueba en la Pi. Los nodos de ZX y stepper siguen sin declarar porque faltan sus pines.
+- M1.2: `driver/holo-io/holo-event.h` es la fuente de verdad (registro de 16 bytes: `timestampNs` u64, `source` u16, `code` u16, `value` s32; códigos 1–5 para derecha, izquierda, zoom +, zoom − y autorrotación; `value` 0 suelta, 1 pulsa, 2 repite). `astrea_common.holo_event` lo espeja y `tests/unit/test_holo_event.py` compara ambos lados y compila el header con `gcc`.
+- El host corta el movimiento continuo de los botones cuando dejan de llegar repeticiones (`BUTTON_HOLD_TIMEOUT_S`, 0.3 s): M1.5 debe repetir los cuatro botones de movimiento con un periodo claramente menor, y no repetir el de autorrotación.
+- Estado del código (M1.1 y M1.3–M1.10 escritos, **sin probar en la Pi**, por eso no se marcan): compila sin avisos con `W=1` contra los headers 6.12 de x86, y el lector de prueba (`holo-reader`) compila sin avisos; nada se ha cargado en un kernel. Falta confirmar el kernel de la Pi (`uname -r`) y que sus headers estén instalados; el módulo trae guardas de versión para `platform_driver.remove` (6.11) y `hrtimer_setup` (6.13).
+- Criterio «100 pulsaciones = 100 eventos»: se mide en eventos `PRESS` de un solo botón, mejor el de autorrotación porque no repite; `driver/holo-io/check-presses.sh` compara lo que ve `holo-reader` con `presses` en sysfs y exige `dropped = 0`. Las estadísticas están en `/sys/class/misc/holo-input/device/stats/`.
+- Carga automática (M1.9): el overlay crea el nodo `holo-io`, el módulo se enlaza por `MODULE_DEVICE_TABLE(of)` al instalarlo con `sudo make install` (módulo, regla udev y `holo-io.dtbo`) y añadir `dtoverlay=holo-io` a `/boot/firmware/config.txt`. Sin verificar en la Pi.
+- Entregables: `driver/holo-io/` (`holo-core.c`, `holo-buttons.c`, `holo-io-overlay.dts`, `Makefile`), lector de prueba, pruebas en `tests/`.
 
 ---
 
@@ -214,7 +221,7 @@ La reconstrucción se reparte entre ≥3 workers y da el mismo resultado que en 
 
 # Milestone 5 — Renderer y sincronización de cámara
 
-Un solo binario de visualización en PC y en la Pi, con el host como fuente de verdad del estado de cámara y el joystick controlando ambos. Depende de: M0.4, M1, M2, M3.
+Un solo binario de visualización en PC y en la Pi, con el host como fuente de verdad del estado de cámara y los botones del dispositivo controlando ambos. Depende de: M0.4, M1, M2, M3.
 
 **Tareas**
 
@@ -223,17 +230,20 @@ Un solo binario de visualización en PC y en la Pi, con el host como fuente de v
 - [ ] M5.3: Modo `hologram`: fondo negro, espejado según orientación del panel, iluminación alta, `PLATFORM_DRM` en la Pi; Depende de: M0.4, M0.5, M5.1;
 - [ ] M5.4: Socket Unix entre el proceso Python local y el renderer; Depende de: M5.1;
 - [ ] M5.5: Host: combina mouse local e `INPUT_EVENT` remoto; emite `CAMERA_STATE{yaw, pitch, zoom, modelId}` al cambiar, ≤60 Hz; Depende de: M2.4, M5.2, M5.4;
-- [ ] M5.6: `device-agent`: lee `/dev/holo-input`, mapea el joystick (←/→ yaw continuo, ↑/↓ pitch, A/B zoom, C reset, D siguiente modelo), envía `INPUT_EVENT`, recibe `CAMERA_STATE` y `MODEL_PUSH` (LOD-low) y los pasa al renderer; Depende de: M1.2, M1.6, M2.2, M2.4, M5.4;
+- [ ] M5.6: `device-agent`: lee `/dev/holo-input`, mapea los botones (derecha/izquierda yaw continuo, zoom +/−, autorrotación), envía `INPUT_EVENT`, recibe `CAMERA_STATE` y `MODEL_PUSH` (LOD-low) y los pasa al renderer; Depende de: M1.2, M1.6, M2.2, M2.4, M5.4;
 - [ ] M5.7: Indicador de cobertura de 360° en el visor del host; Depende de: M3.1, M5.1;
 
 **Criterio de aceptación/éxito**
 
 - [ ] Cumple que el mismo modelo se ve en el visor y en la Pi, recibido cifrado una sola vez (1,3,5,6)
-- [ ] Cumple que el joystick rota y hace zoom en ambos sincronizados (2,5,6)
-- [ ] Cumple latencia joystick → holograma < 100 ms, medida y documentada (5,6)
+- [ ] Cumple que los botones rotan y hacen zoom en ambos sincronizados (2,5,6)
+- [ ] Cumple latencia botón → holograma < 100 ms, medida y documentada (5,6)
 
 **Notas**
 
+- Diseño de entradas: A/D giran, W/S hacen zoom, `R` activa o desactiva la rotación automática (20°/s, empieza desactivada) y `N` pasa al siguiente modelo; el arrastre del mouse gira solo en horizontal y no hay rueda, rotación vertical ni reset. Los botones GPIO repiten esas mismas acciones (ver M1). El renderer aún tiene el mapeo anterior (flechas, `+`/`-`, rueda, pitch) y se ajusta en M5.4.
+- Dueño del hub: un servicio nuevo y permanente del host, `astrea-host`, mantiene el hub (puerto 7400), el estado de cámara, el `MODEL_PUSH` y el `device-agent`, y lanza las reconstrucciones. Hoy el hub solo existe mientras corre `astrea-coordinator reconstruct`. `config.toml` sigue siendo uno solo e idéntico en todas las máquinas, sin config propio para la Pi.
+- M5.5 (avance): `coordinator.camera_control.CameraControl` integra teclado, mouse y botones en un único estado, sumando las fuentes y la rotación automática, y limita la emisión de `CameraState` a 60 Hz. Es lógica pura con reloj inyectado (`tests/unit/test_camera_control.py`). Falta conectarla al socket del renderer (M5.4), al hub y al `device-agent`.
 - Entregables: `renderer/`, `device-agent/`, lógica de estado de cámara en el host.
 
 ---
@@ -245,14 +255,14 @@ El sistema completo funcionando en la maqueta física, listo para la demo. Depen
 **Tareas**
 
 - [ ] M6.1: Caja Pepper's Ghost negra mate, panel a 45°, monitor boca arriba; Depende de: M0.5;
-- [ ] M6.2: Montaje del joystick y botones; Depende de: M1;
+- [ ] M6.2: Montaje de los 5 botones; Depende de: M1;
 - [ ] M6.3: Base giratoria manual con anillo ArUco impreso, superficie mate clara; Depende de: M0.3;
 - [ ] M6.4: Prueba fin a fin repetida y guion de demo; Depende de: M4, M5, M6.1, M6.2, M6.3;
 - [ ] M6.5: Ajustes de rendimiento y robustez encontrados en la integración; Depende de: M6.4;
 
 **Criterio de aceptación/éxito**
 
-- [ ] Cumple fin a fin: girar el objeto a mano → captura automática → modelo en el visor → aparece en el holograma → el joystick rota y hace zoom en ambos sincronizados, con latencia < 100 ms (1,2,3,4,5)
+- [ ] Cumple fin a fin: girar el objeto a mano → captura automática → modelo en el visor → aparece en el holograma → los botones rotan y hacen zoom en ambos sincronizados, con latencia < 100 ms (1,2,3,4,5)
 
 **Notas**
 
@@ -269,7 +279,7 @@ Cubrir todas las secciones que pide `especificacion.md`. Avanza en paralelo desd
 - [ ] M7.1: Introducción (teoría y descripción); Depende de: —;
 - [ ] M7.2: Ambiente de desarrollo (frameworks, bibliotecas, apps de terceros, herramientas); Depende de: —;
 - [ ] M7.3: Atributos — **Aprendizaje Continuo**: necesidades de aprendizaje, tecnologías, acciones implementadas **con evidencia**, evaluación crítica de su eficiencia. Recolectar evidencias en cada milestone; Depende de: —;
-- [ ] M7.4: Diseño: diagramas de **arquitectura, componentes, secuencia** (escaneo y joystick → holograma) y **funcionalidades**; reutilizar `docs/block-diagram.dot`; Depende de: M2;
+- [ ] M7.4: Diseño: diagramas de **arquitectura, componentes, secuencia** (escaneo y botones → holograma) y **funcionalidades**; reutilizar `docs/block-diagram.dot`; Depende de: M2;
 - [ ] M7.5: Resultados de M1–M6 (estadísticas del driver, captura Wireshark, Chamfer, speedup, latencia); Depende de: M6;
 - [ ] M7.6: Instrucciones de uso, conclusiones, sugerencias y recomendaciones, referencias; Depende de: M7.5;
 - [ ] M7.7: README con cómo compilar, generar certificados y ejecutar cada nodo; Depende de: M6;
@@ -301,7 +311,7 @@ Solo después de cerrar M6. Las interfaces ya existen desde M1 y M2. 8a (torname
 **Criterio de aceptación/éxito**
 
 - [ ] Cumple 8a: un escaneo completo se hace sin girar la base a mano (1,2,3,4)
-- [ ] Cumple 8b: los gestos controlan la cámara igual que el joystick (5,6)
+- [ ] Cumple 8b: los gestos controlan la cámara igual que los botones (5,6)
 
 **Notas**
 
@@ -311,6 +321,6 @@ Solo después de cerrar M6. Las interfaces ya existen desde M1 y M2. 8a (torname
 
 **Riesgos abiertos**
 
-- **Hardware sin 8a:** si la tornamesa no se implementa, el área de Hardware se defiende con el display Pepper's Ghost, el renderer y el joystick. Conviene decidir pronto si 8a entra en el alcance.
+- **Hardware sin 8a:** si la tornamesa no se implementa, el área de Hardware se defiende con el display Pepper's Ghost, el renderer y los botones. Conviene decidir pronto si 8a entra en el alcance.
 - **Rendimiento de la Pi 3:** depende de M0.4; si es justo, el worker de la Pi se reduce al mínimo de vistas.
 - **Record3D por USB en Linux:** depende de M0.2; el respaldo `.r3d` cambia la captura automática por una selección de vistas posterior.
