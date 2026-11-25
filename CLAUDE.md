@@ -24,6 +24,7 @@ cmake -S renderer -B renderer/build -DCMAKE_BUILD_TYPE=Release && cmake --build 
                                           # GLBs from astrea-reconstruct are z-up: run the renderer with --up-axis z (--rotate-z <deg> spins about that axis)
                                           # add -DRENDERER_PLATFORM=DRM on the Pi, -DOPENGL_VERSION="ES 2.0" to test GLES2 shaders on a PC
 make -C driver/holo-io                    # kernel module, needs kernel headers (Pi)
+make help                                 # root Makefile: one target per step of the full run (capture SCAN=, worker NAME=, reconstruct SCAN=, models, host-service, viewer, agent, hologram, monitor, build, test, test-san); every target runs in the foreground, one per terminal
 make -C libholo                           # libholo.a, the C library that is the only user-space code talking to the driver, and build/holo-reader (libholo/tools/check-presses.sh 100 checks N presses = N events)
 make -C net                               # secure network in C: build/astrea-netd (TLS daemon of every node) and build/astrea-device-agent; needs build-essential and libssl-dev
 make -C net SAN=1                         # the same with AddressSanitizer and UndefinedBehaviorSanitizer (build-san/); run the tests against it with ASTREA_NETD / ASTREA_DEVICE_AGENT
