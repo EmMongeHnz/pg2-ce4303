@@ -16,6 +16,7 @@ static void PrintUsage(const char *program) {
             "          [--mirror none|horizontal|vertical] [--width px] [--height px]\n"
             "          [--auto-rotate deg-per-s] [--benchmark seconds] [--screenshot file.png]\n"
             "          [--up-axis y|z] [--rotate-z degrees]\n"
+            "          [--control-socket path] [--models-dir dir]\n"
             "\n"
             "  --mode        viewer: PC window with mouse orbit; hologram: black background,\n"
             "                bright lighting, mirrored for the Pepper's Ghost panel\n"
@@ -26,7 +27,12 @@ static void PrintUsage(const char *program) {
             "  --up-axis     vertical axis of the model: y (glTF standard, default) or z (astrea-reconstruct\n"
             "                output, plate frame)\n"
             "  --rotate-z    turn the model about its own z axis by this many degrees (the vertical one\n"
-            "                with --up-axis z)\n",
+            "                with --up-axis z)\n"
+            "  --control-socket  follow the camera state sent over this Unix socket and report the keyboard and\n"
+            "                mouse through it (no local camera, no local auto-rotation)\n"
+            "  --models-dir  with --control-socket, models are loaded from <dir>/<modelId>.glb\n"
+            "\n"
+            "Keys (viewer): A/D yaw, W/S zoom, R auto-rotation on/off, N next model, mouse drag turns, Esc quits.\n",
             program);
 }
 
@@ -89,6 +95,10 @@ bool ParseOptions(int argc, char **argv, RendererOptions *options) {
             ok = ok && options->benchmarkSeconds > 0.0f;
         } else if (strcmp(flag, "--screenshot") == 0) {
             options->screenshotPath = value;
+        } else if (strcmp(flag, "--control-socket") == 0) {
+            options->controlSocketPath = value;
+        } else if (strcmp(flag, "--models-dir") == 0) {
+            options->modelsDir = value;
         } else {
             fprintf(stderr, "unknown option: %s\n", flag);
             ok = false;
@@ -108,7 +118,9 @@ bool ParseOptions(int argc, char **argv, RendererOptions *options) {
     options->mirror = mirror >= 0 ? (MirrorAxis)mirror : (isHologram ? MIRROR_HORIZONTAL : MIRROR_NONE);
     options->width = width >= 0 ? width : (isHologram ? 0 : VIEWER_WIDTH);
     options->height = height >= 0 ? height : (isHologram ? 0 : VIEWER_HEIGHT);
-    options->autoRotateDegPerS = autoRotate >= 0.0f ? autoRotate : (isHologram ? HOLOGRAM_AUTO_ROTATE_DEG_PER_S : 0.0f);
+    options->autoRotateDegPerS = autoRotate > 0.0f ? autoRotate : HOLOGRAM_AUTO_ROTATE_DEG_PER_S;
+    options->autoRotateOn = autoRotate >= 0.0f ? autoRotate > 0.0f : isHologram;
+    if (options->controlSocketPath != NULL) options->autoRotateOn = false;
     if (options->modelPath == NULL) options->modelPath = DefaultModelPath(options->lod);
     return true;
 }

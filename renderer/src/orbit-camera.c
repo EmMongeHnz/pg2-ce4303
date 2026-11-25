@@ -11,10 +11,8 @@
 #define BASE_DISTANCE 3.0f
 #define FOV_Y_DEG 35.0f
 #define KEY_YAW_DEG_PER_S 90.0f
-#define KEY_PITCH_DEG_PER_S 60.0f
 #define KEY_ZOOM_PER_S 1.0f
 #define MOUSE_DEG_PER_PX 0.3f
-#define WHEEL_ZOOM_STEP 0.1f
 
 OrbitState DefaultOrbitState(void) {
     return (OrbitState){.yawDeg = 0.0f, .pitchDeg = DEFAULT_PITCH_DEG, .zoom = 1.0f};
@@ -46,21 +44,23 @@ Camera3D OrbitCamera(OrbitState state) {
     };
 }
 
-OrbitState ApplyLocalInput(OrbitState state, float deltaS, bool allowMouse) {
-    if (IsKeyDown(KEY_LEFT)) state.yawDeg -= KEY_YAW_DEG_PER_S * deltaS;
-    if (IsKeyDown(KEY_RIGHT)) state.yawDeg += KEY_YAW_DEG_PER_S * deltaS;
-    if (IsKeyDown(KEY_UP)) state.pitchDeg += KEY_PITCH_DEG_PER_S * deltaS;
-    if (IsKeyDown(KEY_DOWN)) state.pitchDeg -= KEY_PITCH_DEG_PER_S * deltaS;
-    if (IsKeyDown(KEY_EQUAL) || IsKeyDown(KEY_KP_ADD)) state.zoom *= 1.0f + KEY_ZOOM_PER_S * deltaS;
-    if (IsKeyDown(KEY_MINUS) || IsKeyDown(KEY_KP_SUBTRACT)) state.zoom /= 1.0f + KEY_ZOOM_PER_S * deltaS;
-    if (IsKeyPressed(KEY_R)) state = DefaultOrbitState();
-    if (allowMouse) {
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            Vector2 delta = GetMouseDelta();
-            state.yawDeg -= delta.x * MOUSE_DEG_PER_PX;
-            state.pitchDeg += delta.y * MOUSE_DEG_PER_PX;
-        }
-        state.zoom *= 1.0f + GetMouseWheelMove() * WHEEL_ZOOM_STEP;
-    }
+CameraInput PollCameraInput(bool allowMouse) {
+    CameraInput input = {
+        .yawLeft = IsKeyDown(KEY_A),
+        .yawRight = IsKeyDown(KEY_D),
+        .zoomIn = IsKeyDown(KEY_W),
+        .zoomOut = IsKeyDown(KEY_S),
+        .toggleAutoRotate = IsKeyPressed(KEY_R),
+        .nextModel = IsKeyPressed(KEY_N),
+    };
+    if (allowMouse && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) input.mouseDeltaX = GetMouseDelta().x;
+    return input;
+}
+
+OrbitState ApplyCameraInput(OrbitState state, const CameraInput *input, float deltaS) {
+    int yaw = (int)input->yawRight - (int)input->yawLeft;
+    int zoom = (int)input->zoomIn - (int)input->zoomOut;
+    state.yawDeg += yaw * KEY_YAW_DEG_PER_S * deltaS - input->mouseDeltaX * MOUSE_DEG_PER_PX;
+    state.zoom *= powf(1.0f + KEY_ZOOM_PER_S * deltaS, (float)zoom);
     return ClampOrbitState(state);
 }

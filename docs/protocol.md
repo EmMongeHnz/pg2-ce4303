@@ -22,7 +22,7 @@ Un mismo nodo puede mantener una conexión por rol (la Pi abre una como `worker`
 - **Identidad del hub:** el cliente verifica el certificado del servidor contra el nombre del hub (`hub.node`), aunque se conecte por IP. Un certificado de otro nodo no se acepta como hub.
 - **Identidad del cliente:** el hub lee el nombre del SAN del certificado y exige que coincida con el `node` de `HELLO` y que el rol esté permitido para ese nodo en `config.toml`.
 - **Cifrado:** los tres suites TLS 1.3 son AEAD. Python no permite elegir suites de TLS 1.3; para que un proceso use solo ChaCha20-Poly1305 (la Pi 3 no tiene aceleración AES) se lanza con `OPENSSL_CONF=pki/openssl-chacha20.cnf`.
-- El socket Unix entre el proceso Python local y el renderer no sale de la máquina y no usa TLS.
+- El socket Unix entre el proceso Python local y el renderer no sale de la máquina y no usa TLS (formato en la sección 5, «Socket Unix del renderer»).
 
 ## 3. Framing
 
@@ -104,6 +104,30 @@ No viaja por la red: es el contrato local entre `holo-io` y el agente, que reenv
 - **Estadísticas** en `/sys/class/misc/holo-input/device/stats/` (solo lectura): `irqs` (flancos), `presses`, `releases`, `repeats`, `events` (suma de las tres), `bounces_filtered` (flancos que no terminaron en pulsación ni suelta, es decir `irqs − presses − releases`), `dropped`, `debounce_ms` y `repeat_ms`.
 - **Criterio «N pulsaciones = N eventos»:** se cuenta en eventos `PRESS`. Con el botón de autorrotación, que no repite, `presses` aumenta en N, el lector ve N `PRESS` y `dropped` no cambia (`driver/holo-io/check-presses.sh`).
 - **Acceso:** la regla udev `99-holo-io.rules` deja el nodo en el grupo `input` con modo 0660.
+
+### Socket Unix del renderer (local, no viaja por la red)
+
+Contrato entre el proceso Python de una máquina y su `renderer` (`--control-socket <ruta>`). El proceso Python escucha, el renderer se conecta como cliente y reintenta cada 0.5 s. Es un flujo de registros binarios de tamaño fijo, en el orden de bytes de la máquina (little-endian en la Pi 3 y en x86). Fuentes de verdad: `renderer/src/control-protocol.h` y su espejo `astrea_common.render_link`, comparados por `tests/unit/test_render_link.py`.
+
+- **Python → renderer, `ControlState` (44 bytes):** `yawDeg`, `pitchDeg`, `zoom` (float32) y `modelId` (32 bytes, UTF-8 rellenado con ceros; 31 como máximo). Es el estado que dibuja el renderer; el mismo que `CAMERA_STATE`.
+- **Renderer → Python, `ControlInput` (8 bytes):** `kind` u8, `action` u8, `reserved` u16 (0) y `value` float32.
+
+  | `kind` | Significado |
+  |---|---|
+  | 1 | `ACTION_PRESS`: se pulsó la tecla de `action` |
+  | 2 | `ACTION_RELEASE`: se soltó |
+  | 3 | `MOUSE_DELTA`: arrastre horizontal en píxeles (`value`) |
+
+  | `action` | Tecla |
+  |---|---|
+  | 1 `YAW_LEFT` / 2 `YAW_RIGHT` | `A` / `D` (mantener) |
+  | 3 `ZOOM_IN` / 4 `ZOOM_OUT` | `W` / `S` (mantener) |
+  | 5 `TOGGLE_AUTO_ROTATE` | `R` (solo `PRESS`) |
+  | 6 `NEXT_MODEL` | `N` (solo `PRESS`) |
+
+- **Comportamiento:** con el socket conectado, el renderer no mueve la cámara ni gira por su cuenta: solo reporta entradas y dibuja el último estado. Sin conexión conserva el último estado y reintenta. El renderer en modo `hologram` (la Pi) no reporta entradas. Si el Python se desconecta, suelta las teclas que tenía pulsadas (`ReleaseDevice`).
+- **`modelId`:** el renderer carga `<--models-dir>/<modelId>.glb`, salvo el modelo inicial (el nombre de `--model` sin `.glb`), que recarga desde la ruta con la que arrancó aunque no esté en ese directorio; el id solo admite letras, dígitos, `-`, `_` y `.` (sin empezar por punto), así que no puede salir del directorio. Si el archivo no existe conserva el modelo actual y lo avisa una sola vez. Un id vacío no cambia nada.
+- **Lado Python:** `coordinator.renderer_bridge.RendererBridge` atiende el socket, alimenta a `CameraControl` y envía el estado a ≤60 Hz (descarta envíos si el renderer va atrasado: gana el último).
 
 ### Trabajos de reconstrucción (N1)
 

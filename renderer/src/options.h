@@ -19,8 +19,11 @@ typedef struct {
     int width;
     int height;
     float autoRotateDegPerS;
+    bool autoRotateOn;
     float benchmarkSeconds;
     const char *screenshotPath;
+    const char *controlSocketPath;
+    const char *modelsDir;
 } RendererOptions;
 
 /* Returns false and prints usage when the arguments are invalid or --help was given. */

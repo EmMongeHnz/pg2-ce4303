@@ -128,7 +128,11 @@ Devuelve solo los bloques con peso > 0, comprimidos con zstd.
   - Integra también la autorrotación (20°/s, empieza desactivada), de modo que los dos visores giran igual. El renderer del host solo reporta entradas crudas por el socket Unix y dibuja el estado que recibe.
   - Emite `CameraState{yaw, pitch, zoom, modelId}` cuando cambia, a ≤60 Hz. `pitch` viaja siempre con el valor fijo.
   - Teclado: A/D giran, W/S hacen zoom, `R` activa o desactiva la autorrotación y `N` pasa al siguiente modelo. El arrastre del mouse solo gira en horizontal (sin rueda). No hay reset.
-- **Socket Unix local** entre el proceso Python y el renderer. No necesita cifrado porque no pasa por la red.
+- **Socket Unix local** entre el proceso Python y el renderer (`--control-socket`). No necesita cifrado porque no pasa por la red.
+  - Son registros binarios de tamaño fijo (`ControlState` de 44 bytes hacia el renderer y `ControlInput` de 8 bytes hacia Python), definidos en `renderer/src/control-protocol.h` y espejados en `astrea_common.render_link`. Se descartó msgpack para no depender de una librería en C.
+  - Conectado al socket, el renderer no gira ni mueve la cámara por su cuenta: reporta teclado y mouse y dibuja el estado recibido. El de la Pi (`hologram`) no reporta entradas.
+  - `modelId` se resuelve como `<--models-dir>/<modelId>.glb`; el modelo inicial de `--model` se recarga desde su propia ruta, para que el ciclo con `N` vuelva al primero.
+  - Sin socket (modo independiente) usa las mismas teclas y puede alternar su autorrotación con `R`.
 
 ---
 
