@@ -244,7 +244,7 @@ El enunciado del curso exige C o Rust para el driver y la red segura, así que *
 
 ```
 astrea-view/
-  driver/holo-io/          # holo-core.c, holo-buttons.c, holo-io.h, holo-event.h, holo-ioctl.h, holo-reader.c, zx-gesture.c*, turntable.c*, holo-io-overlay.dts, 99-holo-io.rules, Makefile
+  driver/holo-io/          # holo-core.c, holo-buttons.c, holo-io.h, holo-event.h, holo-ioctl.h, zx-gesture.c*, turntable.c*, holo-io-overlay.dts, 99-holo-io.rules, Makefile
   device-agent/            # /dev/holo-input reader, mTLS client, renderer socket, model installer
   host/capture-service/    # record3d / .r3d ingestion, ArUco tracking, keyframe selection
   host/coordinator/        # scheduling, TSDF merge, meshing, LOD export, camera state (camera_control)
@@ -252,6 +252,7 @@ astrea-view/
   renderer/                # C + raylib, viewer/hologram modes
   common/                  # message definitions and validation, config, Python client of astrea-netd
   net/                     # secure network in C: libastrea-net.a, astrea-netd, astrea-device-agent
+  libholo/                 # C library (libholo.a), the only user-space code that talks to the driver, and holo-reader
   pki/                     # CA + node certs
   hardware/                # ArUco ring generator, 3D-printable plate/coupler (optional)
   tests/                   # synthetic pipeline, protocol, driver tests

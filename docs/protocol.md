@@ -103,7 +103,8 @@ No viaja por la red: es el contrato local entre `holo-io` y el agente, que reenv
 
   Un valor fuera de rango da `EINVAL`. La primera repetición llega un periodo después de la pulsación, y el máximo de 100 ms deja al menos 3 repeticiones dentro del corte de 0.3 s del host (`BUTTON_HOLD_TIMEOUT_S`, comprobado en `tests/unit/test_holo_io_sources.py`).
 - **Estadísticas** en `/sys/class/misc/holo-input/device/stats/` (solo lectura): `irqs` (flancos), `presses`, `releases`, `repeats`, `events` (suma de las tres), `bounces_filtered` (flancos que no terminaron en pulsación ni suelta, es decir `irqs − presses − releases`), `dropped`, `debounce_ms` y `repeat_ms`.
-- **Criterio «N pulsaciones = N eventos»:** se cuenta en eventos `PRESS`. Con el botón de autorrotación, que no repite, `presses` aumenta en N, el lector ve N `PRESS` y `dropped` no cambia (`driver/holo-io/check-presses.sh`).
+- **Criterio «N pulsaciones = N eventos»:** se cuenta en eventos `PRESS`. Con el botón de autorrotación, que no repite, `presses` aumenta en N, el lector ve N `PRESS` y `dropped` no cambia (`libholo/tools/check-presses.sh`).
+- **Biblioteca:** el único código que abre `/dev/holo-input`, emite sus `ioctl` o lee sus estadísticas es `libholo` (`libholo/include/holo.h`, `libholo.a`): `HoloOpen`, `HoloClose`, `HoloReadEvent` (con tiempo de espera; reconstruye los registros cortados), `HoloGetDebounceMs`, `HoloSetDebounceMs`, `HoloGetRepeatMs`, `HoloSetRepeatMs`, `HoloReadStats` y `HoloActionOf` (convierte un botón en `MoveRight`, `MoveLeft`, `ZoomIn`, `ZoomOut` o `ToggleAutoRotate` con su fase). El `device-agent` en C y `holo-reader` la usan; una prueba verifica que ningún otro archivo del repositorio usa los `ioctl` ni el sysfs del driver.
 - **Acceso:** la regla udev `99-holo-io.rules` deja el nodo en el grupo `input` con modo 0660.
 
 ### Demonio de red (local, entre el programa Python y `astrea-netd`)
